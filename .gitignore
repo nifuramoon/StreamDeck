@@ -1,3 +1,5 @@
+
+
 # Binaries for programs and plugins
 *.exe
 *.exe~
@@ -6,6 +8,7 @@
 *.dylib
 bin/
 main
+streamdeck-twitch
 
 # Test binary, built with 'go test -c'
 *.test
@@ -15,3 +18,4 @@ main
 .idea/
 .vscode/
 *.swp
+cache/
