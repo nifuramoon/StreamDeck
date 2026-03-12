@@ -1,0 +1,17 @@
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+bin/
+main
+
+# Test binary, built with 'go test -c'
+*.test
+
+# Output of the go coverage tool, consumed by 'go tool cover -'
+*.out
+.idea/
+.vscode/
+*.swp
