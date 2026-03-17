@@ -239,8 +239,11 @@ func init() {
 }
 
 func main() {
+	// ローカル環境変数が空の場合、リモートストアから読み込み
+	loadEnvFromRemote()
+
 	if CID == "" || AT == "" {
-		log.Fatalf("[ERROR] TWITCH_CLIENT_ID or TWITCH_ACCESS_TOKEN not set")
+		log.Fatalf("[ERROR] TWITCH_CLIENT_ID or TWITCH_ACCESS_TOKEN not set (ローカル環境変数もリモートストアも未設定)")
 	}
 	loadFonts()
 	var err error
