@@ -139,7 +139,10 @@ func findHIDDevice(vendorID, productID uint16) (*V2Device, error) {
 
 		file := os.NewFile(handle, devicePath)
 		log.Printf("[USB] Stream Deck Connected via %s", devicePath)
-		return &V2Device{file: file}, nil
+		return &V2Device{
+			file:       file,
+			prevImages: make([]string, MAX_KEYS),
+		}, nil
 	}
 
 	return nil, fmt.Errorf("device VID=%04X PID=%04X not found", vendorID, productID)
@@ -170,7 +173,17 @@ func platformOpenBrowser(url string) {
 }
 
 func platformReboot() {
-	exec.Command("shutdown", "/r", "/t", "0").Start()
+	log.Println("[SYSTEM] システム再起動を実行します...")
+
+	// Windowsでの再起動（管理者権限が必要な場合がある）
+	cmd := exec.Command("shutdown", "/r", "/t", "5", "/c", "StreamDeckから再起動を実行しました")
+	if err := cmd.Start(); err != nil {
+		log.Printf("[SYSTEM] 再起動コマンド失敗: %v", err)
+		// 代替方法
+		exec.Command("shutdown", "/r").Start()
+	} else {
+		log.Println("[SYSTEM] 再起動コマンド実行: 5秒後に再起動します")
+	}
 }
 
 func platformLoadFontPaths() []string {
@@ -182,13 +195,28 @@ func platformLoadFontPaths() []string {
 	localAppData := os.Getenv("LOCALAPPDATA")
 
 	paths := []string{
-		filepath.Join(fontsDir, "YuGothB.ttc"),
-		filepath.Join(fontsDir, "YuGothM.ttc"),
-		filepath.Join(fontsDir, "msgothic.ttc"),
-		filepath.Join(fontsDir, "meiryo.ttc"),
-		filepath.Join(fontsDir, "meiryob.ttc"),
+		// 日本語フォントを最優先
+		filepath.Join(fontsDir, "msgothic.ttc"), // MS ゴシック
+		filepath.Join(fontsDir, "msmincho.ttc"), // MS 明朝
+		filepath.Join(fontsDir, "meiryo.ttc"),   // メイリオ
+		filepath.Join(fontsDir, "meiryob.ttc"),  // メイリオ 太字
+		filepath.Join(fontsDir, "YuGothB.ttc"),  // 游ゴシック Bold
+		filepath.Join(fontsDir, "YuGothM.ttc"),  // 游ゴシック Medium
+		filepath.Join(fontsDir, "YuGothL.ttc"),  // 游ゴシック Light
+		filepath.Join(fontsDir, "yumin.ttf"),    // 游明朝
+		filepath.Join(fontsDir, "yumindb.ttf"),  // 游明朝 Demibold
+
+		// その他の日本語フォント
+		filepath.Join(fontsDir, "ipag.ttf"), // IPAゴシック
+		filepath.Join(fontsDir, "ipam.ttf"), // IPA明朝
+
+		// 英字フォント（フォールバック）
 		filepath.Join(fontsDir, "segoeui.ttf"),
+		filepath.Join(fontsDir, "segoeuib.ttf"),
 		filepath.Join(fontsDir, "arial.ttf"),
+		filepath.Join(fontsDir, "arialbd.ttf"),
+		filepath.Join(fontsDir, "tahoma.ttf"),
+		filepath.Join(fontsDir, "tahomabd.ttf"),
 	}
 
 	// ユーザーフォントディレクトリも探索
@@ -201,4 +229,25 @@ func platformLoadFontPaths() []string {
 	}
 
 	return paths
+}
+
+// platformGetClipboard gets text from clipboard on Windows
+func platformGetClipboard() (string, error) {
+	// PowerShellを使用してクリップボードを取得
+	cmd := exec.Command("powershell", "-Command", "Get-Clipboard")
+	output, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("クリップボード取得に失敗: %v", err)
+	}
+	return strings.TrimSpace(string(output)), nil
+}
+
+// platformSetEnvVar sets environment variable on Windows
+func platformSetEnvVar(name, value string) bool {
+	// 現在のプロセスの環境変数を設定
+	os.Setenv(name, value)
+
+	// setxを使用してユーザー環境変数に永続化
+	err := exec.Command("setx", name, value).Run()
+	return err == nil
 }
