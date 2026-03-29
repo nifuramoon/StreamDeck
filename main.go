@@ -356,9 +356,19 @@ func init() {
 }
 
 func main() {
+	// Auto-fix mode check
+	if len(os.Args) > 1 && os.Args[1] == "--auto-fix" {
+		infoLog("自動修正モードで起動")
+		if !RunWithAutoFix() {
+			errorLog("自動修正モードで起動失敗")
+			os.Exit(1)
+		}
+		return
+	}
+
 	// Check and load configuration file
 	if !checkAndSetupConfig() {
-		log.Println("❌ Configuration not complete. Edit config file and restart.")
+		errorLog("Configuration not complete. Edit config file and restart.")
 		os.Exit(1)
 	}
 
