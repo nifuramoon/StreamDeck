@@ -9,9 +9,10 @@ import (
 
 // Config represents the application configuration
 type Config struct {
-	ClientID     string `json:"client_id"`
-	ClientSecret string `json:"client_secret"`
-	Scope        string `json:"scope"`
+	ClientID             string `json:"client_id"`
+	ClientSecret         string `json:"client_secret"`
+	Scope                string `json:"scope"`
+	NotificationsEnabled bool   `json:"notifications_enabled,omitempty"`
 }
 
 var (
@@ -57,6 +58,11 @@ func loadConfig() bool {
 		SCOPE = config.Scope
 	}
 
+	// Load notification setting
+	if config.NotificationsEnabled {
+		notificationEnabled = true
+	}
+
 	// Try to load tokens
 	tokensPath := filepath.Join(configDir, "tokens.json")
 	if tokenData, err := os.ReadFile(tokensPath); err == nil {
@@ -98,14 +104,37 @@ func saveConfig(config Config) bool {
 	return true
 }
 
+// saveNotificationSetting saves the notification setting to config file
+func saveNotificationSetting(enabled bool) bool {
+	initConfig()
+
+	// Load existing config
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return false
+	}
+
+	var config Config
+	if err := json.Unmarshal(data, &config); err != nil {
+		return false
+	}
+
+	// Update notification setting
+	config.NotificationsEnabled = enabled
+
+	// Save back
+	return saveConfig(config)
+}
+
 // createDefaultConfig creates a default config file with instructions
 func createDefaultConfig() bool {
 	initConfig()
 
 	config := Config{
-		ClientID:     "",
-		ClientSecret: "",
-		Scope:        "user:read:email",
+		ClientID:             "",
+		ClientSecret:         "",
+		Scope:                "user:read:email user:read:follows user:read:broadcast user:write:chat chat:read",
+		NotificationsEnabled: true, // デフォルトで通知を有効にする
 	}
 
 	data, err := json.MarshalIndent(config, "", "  ")

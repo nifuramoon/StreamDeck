@@ -251,3 +251,42 @@ func platformSetEnvVar(name, value string) bool {
 	err := exec.Command("setx", name, value).Run()
 	return err == nil
 }
+
+// platformSpeakText implements text-to-speech on Windows
+func platformSpeakText(text string) {
+	// Try multiple methods for Windows TTS
+
+	// Method 1: PowerShell SpeechSynthesizer (Windows 8+)
+	psScript := fmt.Sprintf(`Add-Type -AssemblyName System.speech; $speak = New-Object System.Speech.Synthesis.SpeechSynthesizer; $speak.Speak("%s")`, strings.ReplaceAll(text, `"`, `\"`))
+	cmd := exec.Command("powershell", "-Command", psScript)
+	if err := cmd.Start(); err == nil {
+		log.Printf("[TTS] 音声合成成功: %s (PowerShell SpeechSynthesizer)", text)
+		return
+	}
+
+	// Method 2: Using SAPI via VBScript (older Windows)
+	vbsScript := fmt.Sprintf(`CreateObject("SAPI.SpVoice").Speak "%s"`, strings.ReplaceAll(text, `"`, `\"`))
+	vbsFile := os.TempDir() + "\\tts.vbs"
+	os.WriteFile(vbsFile, []byte(vbsScript), 0644)
+	defer os.Remove(vbsFile)
+
+	cmd = exec.Command("cscript", "//Nologo", vbsFile)
+	if err := cmd.Start(); err == nil {
+		log.Printf("[TTS] 音声合成成功: %s (VBScript SAPI)", text)
+		return
+	}
+
+	// Method 3: Using built-in narrator commands (Windows 10+)
+	cmd = exec.Command("cmd", "/c", "echo", text, "|", "clip")
+	if err := cmd.Run(); err == nil {
+		// Try to use narrator hotkey (Win+Ctrl+Enter) - this is tricky from command line
+		log.Printf("[TTS] テキストをクリップボードにコピーしました: %s", text)
+		log.Printf("[TTS] Windowsナレーターを使用するには Win+Ctrl+Enter を押してください")
+		return
+	}
+
+	log.Printf("[TTS] 警告: Windows音声合成機能の実行に失敗しました")
+	log.Printf("[TTS] 以下の方法を試してください:")
+	log.Printf("[TTS]   1. Windows音声認識機能が有効か確認")
+	log.Printf("[TTS]   2. 別のTTSソフトウェアをインストール")
+}

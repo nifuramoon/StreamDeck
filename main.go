@@ -117,6 +117,11 @@ var (
 	titleWrapped    = map[string]bool{}
 	catWrapped      = map[string]bool{}
 
+	// Stream notification tracking
+	prevOnline          map[string]bool // 前回のオンライン状態
+	prevOnlineMu        sync.RWMutex    // prevOnline用のロック
+	notificationEnabled bool            // 通知機能の有効/無効
+
 	// Log analyzer for automatic error detection and fixes
 	logAnalyzer *LogAnalyzer
 
@@ -446,6 +451,11 @@ func main() {
 	}
 
 	fetchUsers(followed)
+
+	// 通知機能の初期化
+	prevOnline = loadPrevOnlineState()
+	notificationEnabled = loadNotificationSetting()
+
 	go bgLoop()
 	go ircLoop()
 	mainLoop()
@@ -756,7 +766,7 @@ func drawText(img *image.RGBA, x, y int, text string, col color.RGBA, size float
 
 	// アプローチ1: opentypeを使用（より良い日本語サポート）
 	if containsJapanese && tryDrawWithOpenType(img, x, y, text, col, size) {
-		log.Printf("[Font Debug] Japanese text drawn with opentype: '%s'", text)
+		debugLog("[Font Debug] Japanese text drawn with opentype: '%s'", text)
 		return
 	}
 
@@ -777,7 +787,7 @@ func drawText(img *image.RGBA, x, y int, text string, col color.RGBA, size float
 			advance, ok := face.GlyphAdvance(r)
 			if !ok || advance == 0 {
 				canRender = false
-				log.Printf("[Font Debug] Font cannot render Japanese character: U+%04X '%c'", r, r)
+				debugLog("[Font Debug] Font cannot render Japanese character: U+%04X '%c'", r, r)
 			}
 		}
 	}
@@ -789,8 +799,8 @@ func drawText(img *image.RGBA, x, y int, text string, col color.RGBA, size float
 	}
 
 	// デバッグ: 描画するテキストをログに出力
-	if strings.ContainsAny(text, "AuthGetSaveBack") || containsJapanese {
-		log.Printf("[Font Debug] Drawing text: '%s' (Japanese: %v)", text, containsJapanese)
+	if debugMode && (strings.ContainsAny(text, "AuthGetSaveBack") || containsJapanese) {
+		debugLog("[Font Debug] Drawing text: '%s' (Japanese: %v)", text, containsJapanese)
 	}
 
 	// Create a drawer
@@ -809,9 +819,9 @@ func drawText(img *image.RGBA, x, y int, text string, col color.RGBA, size float
 
 	d.DrawString(text)
 
-	if strings.ContainsAny(text, "AuthGetSaveBack") || containsJapanese {
+	if debugMode && (strings.ContainsAny(text, "AuthGetSaveBack") || containsJapanese) {
 		bounds, _ := d.BoundString(text)
-		log.Printf("[Font Debug] Text bounds: %v (ascent: %d)", bounds, ascent)
+		debugLog("[Font Debug] Text bounds: %v (ascent: %d)", bounds, ascent)
 	}
 }
 
@@ -868,7 +878,7 @@ func tryDrawWithOpenType(img *image.RGBA, x, y int, text string, col color.RGBA,
 						}
 
 						d.DrawString(text)
-						log.Printf("[Font Debug] Drew Japanese text with opentype from: %s", filepath.Base(p))
+						debugLog("[Font Debug] Drew Japanese text with opentype from: %s", filepath.Base(p))
 						return true
 					}
 				}
@@ -1255,11 +1265,15 @@ func fetchStreams() {
 	twOrder = nil
 	views = map[string]int{}
 	startedAt = map[string]float64{}
+
+	// 現在オンラインの配信者を記録
+	currentOnlineMap := make(map[string]bool)
 	for _, s := range online {
 		lg := id2lg[fmt.Sprintf("%v", s["user_id"])]
 		if lg == "" {
 			continue
 		}
+		currentOnlineMap[lg] = true
 		twOrder = append(twOrder, lg)
 		views[lg] = int(s["viewer_count"].(float64))
 		title := fmt.Sprintf("%v", s["title"])
@@ -1275,6 +1289,25 @@ func fetchStreams() {
 		}
 	}
 	stateMu.Unlock()
+
+	// 配信開始通知のチェック
+	if notificationEnabled {
+		prevOnlineMu.Lock()
+		for lg := range currentOnlineMap {
+			if !prevOnline[lg] {
+				// 新しく配信を開始した
+				prevOnlineMu.Unlock() // 通知中はロックを解放
+				notifyStreamStart(lg)
+				prevOnlineMu.Lock() // 再ロック
+			}
+		}
+		// 前回の状態を更新
+		prevOnline = currentOnlineMap
+		prevOnlineMu.Unlock()
+
+		// 状態をファイルに保存
+		go savePrevOnlineState()
+	}
 
 	currentOnline := len(online)
 	if currentOnline != lastOnlineCount {
@@ -1431,7 +1464,20 @@ func renderST() {
 	}
 	sdeck.FillImage(0, keyTextBg("StreamDeck", color.RGBA{30, 30, 30, 255}))
 	sdeck.FillImage(1, keyTextBg("再起動", color.RGBA{60, 0, 0, 255}))
-	// ボタン2-13は空白（仕様書通り[0]）
+
+	// 通知設定ボタン
+	notificationText := "通知OFF"
+	notificationColor := color.RGBA{100, 0, 0, 255} // 赤色（OFF時）
+	if notificationEnabled {
+		notificationText = "通知ON"
+		notificationColor = color.RGBA{0, 100, 0, 255} // 緑色（ON時）
+	}
+	sdeck.FillImage(2, keyTextBg(notificationText, notificationColor))
+
+	// テスト音声ボタン
+	sdeck.FillImage(3, keyTextBg("テスト音声", color.RGBA{0, 0, 100, 255}))
+
+	// ボタン4-13は空白
 	sdeck.FillImage(14, keyTextBg("ホーム", color.RGBA{0, 40, 40, 255}))
 	deckMu.Unlock()
 }
@@ -1555,6 +1601,26 @@ func onKey(k int, p bool) {
 			show(SD, "", true)
 		} else if k == 1 {
 			platformReboot()
+		} else if k == 2 {
+			// 通知設定の切り替え
+			notificationEnabled = !notificationEnabled
+			if notificationEnabled {
+				log.Println("[設定] 配信開始通知を有効にしました")
+				// 即時フィードバック：テスト音声を再生
+				go speakText("通知をオンにしました")
+			} else {
+				log.Println("[設定] 配信開始通知を無効にしました")
+				// 即時フィードバック：テスト音声を再生
+				go speakText("通知をオフにしました")
+			}
+			// 設定をファイルに保存
+			saveNotificationSetting(notificationEnabled)
+			// 設定画面を再描画（即時更新）
+			renderST()
+		} else if k == 3 {
+			// テスト音声再生ボタン
+			log.Println("[設定] テスト音声を再生します")
+			go speakText("テスト音声です。VoiceVoxエンジンの動作確認です。")
 		}
 		if k == 14 {
 			show(HOME, "", false)
@@ -1679,6 +1745,7 @@ var (
 	ircJoined        = make(map[string]bool) // 参加済みチャンネル
 	ircUsername      = ""                    // IRCユーザー名
 	ircUsernameTries = 0                     // ユーザー名取得試行回数
+	lastPing         time.Time               // 最後にPINGを送信した時間
 )
 
 // fetchIRCUsername fetches the Twitch username from the API
@@ -1846,11 +1913,11 @@ func ircLoop() {
 
 		ircMu.Lock()
 		if ircConn == nil {
-			log.Printf("[IRC DEBUG] IRC接続試行: token=%v, username=%v", AT != "", ircUsername)
+			debugLog("[IRC DEBUG] IRC接続試行: token=%v, username=%v", AT != "", ircUsername)
 
 			// アクセストークンがない場合は接続しない
 			if AT == "" {
-				log.Println("[IRC DEBUG] アクセストークンなし、接続スキップ")
+				debugLog("[IRC DEBUG] アクセストークンなし、接続スキップ")
 				ircMu.Unlock()
 				time.Sleep(5 * time.Second)
 				continue
@@ -1858,7 +1925,7 @@ func ircLoop() {
 
 			// ユーザー名が未設定の場合は取得を試みる
 			if ircUsername == "" || strings.HasPrefix(ircUsername, "justinfan") {
-				log.Println("[IRC DEBUG] 有効なユーザー名がありません。取得を試みます...")
+				debugLog("[IRC DEBUG] 有効なユーザー名がありません。取得を試みます...")
 				ircMu.Unlock()
 
 				// ユーザー名取得を試みる
@@ -1880,7 +1947,7 @@ func ircLoop() {
 				} else if AT != "" {
 					tokenPreview = "present"
 				}
-				log.Printf("[IRC DEBUG] 認証送信: PASS oauth:%s", tokenPreview)
+				debugLog("[IRC DEBUG] 認証送信: PASS oauth:%s", tokenPreview)
 				fmt.Fprintf(c, "PASS oauth:%s\r\n", AT)
 
 				// ニックネーム設定
@@ -1888,18 +1955,18 @@ func ircLoop() {
 				// justinfan系ユーザーの場合は読み取り専用モード
 				isReadOnly := strings.HasPrefix(nick, "justinfan")
 				if isReadOnly {
-					log.Printf("[IRC DEBUG] 読み取り専用モード: NICK %s", nick)
+					debugLog("[IRC DEBUG] 読み取り専用モード: NICK %s", nick)
 				} else {
-					log.Printf("[IRC DEBUG] 送信可能モード: NICK %s", nick)
+					debugLog("[IRC DEBUG] 送信可能モード: NICK %s", nick)
 				}
 				fmt.Fprintf(c, "NICK %s\r\n", nick)
 
-				log.Println("[IRC DEBUG] CAPABILITY要求送信")
+				debugLog("[IRC DEBUG] CAPABILITY要求送信")
 				fmt.Fprintf(c, "CAP REQ :twitch.tv/tags twitch.tv/commands twitch.tv/membership\r\n")
 
 				ircConn = c
 				ircJoined = make(map[string]bool) // 参加済みチャンネルをリセット
-				log.Println("[IRC DEBUG] IRC接続初期化完了")
+				debugLog("[IRC DEBUG] IRC接続初期化完了")
 			} else {
 				log.Printf("[IRC] 接続失敗: %v", err)
 				ircMu.Unlock()
@@ -1908,29 +1975,28 @@ func ircLoop() {
 			}
 		}
 
-		ircMu.Lock()
 		if ircConn == nil {
-			log.Printf("[IRC DEBUG] IRC接続試行: token=%v, username=%v", AT != "", ircUsername)
+			debugLog("[IRC DEBUG] IRC接続試行: token=%v, username=%v", AT != "", ircUsername)
 			if c, err := net.Dial("tcp", "irc.chat.twitch.tv:6667"); err == nil {
 				log.Println("[IRC] Twitch IRCに接続しました")
 
 				// Twitch IRC接続シーケンス
-				log.Printf("[IRC DEBUG] 認証送信: PASS oauth:%s", AT[:min(10, len(AT))]+"...")
+				debugLog("[IRC DEBUG] 認証送信: PASS oauth:%s", AT[:min(10, len(AT))]+"...")
 				fmt.Fprintf(c, "PASS oauth:%s\r\n", AT)
 
 				nick := "justinfan12345"
 				if ircUsername != "" {
 					nick = ircUsername
 				}
-				log.Printf("[IRC DEBUG] ニックネーム設定: NICK %s", nick)
+				debugLog("[IRC DEBUG] ニックネーム設定: NICK %s", nick)
 				fmt.Fprintf(c, "NICK %s\r\n", nick)
 
-				log.Println("[IRC DEBUG] CAPABILITY要求送信")
+				debugLog("[IRC DEBUG] CAPABILITY要求送信")
 				fmt.Fprintf(c, "CAP REQ :twitch.tv/tags twitch.tv/commands twitch.tv/membership\r\n")
 
 				ircConn = c
 				ircJoined = make(map[string]bool) // 参加済みチャンネルをリセット
-				log.Println("[IRC DEBUG] IRC接続初期化完了")
+				debugLog("[IRC DEBUG] IRC接続初期化完了")
 			} else {
 				log.Printf("[IRC] 接続失敗: %v", err)
 				ircMu.Unlock()
@@ -1944,7 +2010,14 @@ func ircLoop() {
 			log.Printf("[IRC] チャンネルに参加: #%s", live)
 			fmt.Fprintf(ircConn, "JOIN #%s\r\n", live)
 			ircJoined[live] = true
-			log.Printf("[IRC DEBUG] Joined channel: #%s (joined map: %v)", live, ircJoined)
+			debugLog("[IRC DEBUG] Joined channel: #%s (joined map: %v)", live, ircJoined)
+		}
+
+		// 定期的なPING送信（接続維持）
+		if time.Since(lastPing) > 2*time.Minute {
+			fmt.Fprintf(ircConn, "PING :tmi.twitch.tv\r\n")
+			lastPing = time.Now()
+			debugLog("[IRC DEBUG] 接続維持のためPING送信")
 		}
 
 		// メッセージ受信
@@ -1956,10 +2029,23 @@ func ircLoop() {
 				ircMu.Unlock()
 				continue
 			}
-			log.Printf("[IRC] 接続エラー: %v", err)
-			ircConn.Close()
+
+			// EOFエラーの場合は接続が切断されたと判断
+			if err == io.EOF {
+				log.Println("[IRC] 接続が切断されました (EOF)。再接続します...")
+			} else {
+				log.Printf("[IRC] 接続エラー: %v", err)
+			}
+
+			// 接続をクリーンアップ
+			if ircConn != nil {
+				ircConn.Close()
+			}
 			ircConn = nil
+			ircJoined = make(map[string]bool) // 参加済みチャンネルをリセット
 			ircMu.Unlock()
+
+			// 再接続前に少し待機
 			time.Sleep(5 * time.Second)
 			continue
 		}
@@ -1989,7 +2075,7 @@ func ircLoop() {
 
 func ircSend(ch, msg string) {
 	log.Printf("[CHAT] チャット送信試行: #%s -> %s", ch, msg)
-	log.Printf("[CHAT DEBUG] 現在の状態: AT=%v, CID=%v, ircUsername=%s", AT != "", CID != "", ircUsername)
+	debugLog("[CHAT DEBUG] 現在の状態: AT=%v, CID=%v, ircUsername=%s", AT != "", CID != "", ircUsername)
 
 	// Twitch APIを使用したチャット送信
 	sendChatMessage(ch, msg)
@@ -1997,11 +2083,11 @@ func ircSend(ch, msg string) {
 
 // sendChatMessage sends a chat message using Twitch Helix API
 func sendChatMessage(channel, message string) {
-	log.Printf("[CHAT DEBUG] sendChatMessage called: channel=%s, message=%s", channel, message)
+	debugLog("[CHAT DEBUG] sendChatMessage called: channel=%s, message=%s", channel, message)
 
 	if AT == "" || CID == "" {
 		log.Printf("[CHAT ERROR] 送信失敗: アクセストークンまたはClient IDがありません")
-		log.Printf("[CHAT DEBUG] AT empty: %v, CID empty: %v", AT == "", CID == "")
+		debugLog("[CHAT DEBUG] AT empty: %v, CID empty: %v", AT == "", CID == "")
 		return
 	}
 
@@ -2023,7 +2109,7 @@ func sendChatMessage(channel, message string) {
 	}
 
 	// デバッグログ
-	log.Printf("[CHAT DEBUG] チャンネルID: %s (for %s)", channelID, channel)
+	debugLog("[CHAT DEBUG] チャンネルID: %s (for %s)", channelID, channel)
 
 	// ブロードキャスターIDを取得（送信者）
 	broadcasterID, err := getBroadcasterID()
@@ -2041,7 +2127,7 @@ func sendChatMessage(channel, message string) {
 	log.Printf("[CHAT INFO] 代替方法としてIRC送信を試みます")
 
 	// IRCを使用した送信（OAuthトークンとユーザー名が必要）
-	log.Printf("[CHAT DEBUG] broadcasterID取得結果: %s", broadcasterID)
+	debugLog("[CHAT DEBUG] broadcasterID取得結果: %s", broadcasterID)
 
 	// broadcasterIDが空でもIRC送信を試みる
 	sendViaIRC(channel, message, broadcasterID)
@@ -2150,7 +2236,7 @@ func getBroadcasterID() (string, error) {
 
 // sendViaIRC sends a message via IRC with proper OAuth authentication
 func sendViaIRC(channel, message, broadcasterID string) {
-	log.Printf("[IRC SEND DEBUG] sendViaIRC called: channel=%s, message=%s", channel, message)
+	debugLog("[IRC SEND DEBUG] sendViaIRC called: channel=%s, message=%s", channel, message)
 
 	ircMu.Lock()
 	defer ircMu.Unlock()
@@ -2158,20 +2244,20 @@ func sendViaIRC(channel, message, broadcasterID string) {
 	log.Printf("[IRC SEND] 送信試行: #%s -> %s", channel, message)
 
 	// 必須チェック
-	log.Printf("[IRC SEND DEBUG] 必須チェック: AT=%v, ircConn=%v, ircUsername=%s", AT != "", ircConn != nil, ircUsername)
+	debugLog("[IRC SEND DEBUG] 必須チェック: AT=%v, ircConn=%v, ircUsername=%s", AT != "", ircConn != nil, ircUsername)
 	if AT == "" {
 		log.Printf("[IRC SEND ERROR] アクセストークンがありません")
 		return
 	}
 
 	// スコープチェック（チャット送信に必要なスコープ）
-	log.Printf("[IRC SEND DEBUG] スコープチェック: 現在のスコープ=%s", SCOPE)
+	debugLog("[IRC SEND DEBUG] スコープチェック: 現在のスコープ=%s", SCOPE)
 	requiredChatScopes := []string{"user:write:chat", "chat:edit"}
 	hasChatScope := false
 	for _, scope := range requiredChatScopes {
 		if strings.Contains(SCOPE, scope) {
 			hasChatScope = true
-			log.Printf("[IRC SEND DEBUG] 必要なスコープを確認: %s", scope)
+			debugLog("[IRC SEND DEBUG] 必要なスコープを確認: %s", scope)
 			break
 		}
 	}
@@ -2180,10 +2266,16 @@ func sendViaIRC(channel, message, broadcasterID string) {
 		log.Printf("[IRC SEND ERROR] スコープ不足: チャット送信には以下のいずれかが必要: %v", requiredChatScopes)
 		log.Printf("[IRC SEND ERROR] 現在のスコープ: %s", SCOPE)
 		log.Printf("[IRC SEND INFO] OAuth認証をやり直して適切なスコープを取得してください")
+		log.Printf("[IRC SEND INFO] 手順: ホーム画面 → OAuthボタン → 認証後、Save envボタン")
+
+		// ユーザーに視覚的なフィードバックを提供
+		if page == LV || page == TX || page == NX {
+			showTokenError("チャット送信には追加の権限が必要です。OAuthで再認証してください。")
+		}
 		return
 	}
 
-	log.Printf("[IRC SEND DEBUG] スコープチェック通過")
+	debugLog("[IRC SEND DEBUG] スコープチェック通過")
 
 	if ircConn == nil {
 		log.Printf("[IRC SEND ERROR] IRC接続がありません")
@@ -2191,7 +2283,7 @@ func sendViaIRC(channel, message, broadcasterID string) {
 	}
 
 	// ユーザー名がjustinfan系でないことを確認
-	log.Printf("[IRC SEND DEBUG] ユーザー名チェック: ircUsername=%s", ircUsername)
+	debugLog("[IRC SEND DEBUG] ユーザー名チェック: ircUsername=%s", ircUsername)
 	if strings.HasPrefix(ircUsername, "justinfan") {
 		log.Printf("[IRC SEND ERROR] 匿名ユーザー %s では送信できません", ircUsername)
 		log.Printf("[IRC SEND INFO] OAuth認証を行って有効なユーザー名を取得してください")
@@ -2209,7 +2301,7 @@ func sendViaIRC(channel, message, broadcasterID string) {
 		}
 	}
 
-	log.Printf("[IRC SEND DEBUG] ユーザー名チェック通過")
+	debugLog("[IRC SEND DEBUG] ユーザー名チェック通過")
 
 	// チャンネルに参加しているか確認・参加
 	if !ircJoined[channel] {
@@ -2225,7 +2317,7 @@ func sendViaIRC(channel, message, broadcasterID string) {
 
 	// メッセージ送信
 	msgCmd := fmt.Sprintf("PRIVMSG #%s :%s\r\n", channel, message)
-	log.Printf("[IRC SEND DEBUG] 送信コマンド: %s", strings.TrimSpace(msgCmd))
+	debugLog("[IRC SEND DEBUG] 送信コマンド: %s", strings.TrimSpace(msgCmd))
 
 	n, err := fmt.Fprintf(ircConn, msgCmd)
 	if err != nil {
@@ -2356,4 +2448,107 @@ func saveFollowedToCache(followed []string) {
 	}
 
 	log.Printf("[Cache] フォローリストをキャッシュに保存しました (%d人)", len(followed))
+}
+
+// loadPrevOnlineState loads previous online state from file
+func loadPrevOnlineState() map[string]bool {
+	userCache, err := os.UserCacheDir()
+	if err != nil {
+		return make(map[string]bool)
+	}
+
+	statePath := filepath.Join(userCache, "streamdeck-twitch", "prev_online.json")
+	data, err := os.ReadFile(statePath)
+	if err != nil {
+		return make(map[string]bool)
+	}
+
+	var state map[string]bool
+	if err := json.Unmarshal(data, &state); err != nil {
+		return make(map[string]bool)
+	}
+
+	log.Printf("[Notification] 前回の配信状態を読み込みました: %d人", len(state))
+	return state
+}
+
+// savePrevOnlineState saves current online state to file
+func savePrevOnlineState() {
+	prevOnlineMu.RLock()
+	defer prevOnlineMu.RUnlock()
+
+	userCache, err := os.UserCacheDir()
+	if err != nil {
+		return
+	}
+
+	cacheDir := filepath.Join(userCache, "streamdeck-twitch")
+	os.MkdirAll(cacheDir, 0755)
+
+	statePath := filepath.Join(cacheDir, "prev_online.json")
+	data, err := json.Marshal(prevOnline)
+	if err != nil {
+		return
+	}
+
+	os.WriteFile(statePath, data, 0644)
+	log.Printf("[Notification] 配信状態を保存しました: %d人", len(prevOnline))
+}
+
+// loadNotificationSetting loads notification setting from config file
+func loadNotificationSetting() bool {
+	initConfig()
+
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return true // デフォルトは有効
+	}
+
+	var config Config
+	if err := json.Unmarshal(data, &config); err != nil {
+		return true // デフォルトは有効
+	}
+
+	log.Printf("[Notification] 通知設定を読み込みました: %v", config.NotificationsEnabled)
+	return config.NotificationsEnabled
+}
+
+// --- Stream Notification Functions ---
+
+// notifyStreamStart handles stream start notifications
+func notifyStreamStart(login string) {
+	stateMu.RLock()
+	userInfo, ok := lu[login]
+	stateMu.RUnlock()
+
+	if !ok {
+		log.Printf("[Notification] ユーザー情報が見つかりません: %s", login)
+		return
+	}
+
+	displayName := fmt.Sprintf("%v", userInfo["display_name"])
+	if displayName == "" {
+		displayName = login
+	}
+
+	message := fmt.Sprintf("%sさんが配信開始", displayName)
+	log.Printf("[Notification] %s", message)
+
+	// 音声通知を実行
+	speakText(message)
+}
+
+// speakText uses platform-specific TTS to speak text
+func speakText(text string) {
+	// 通知が無効の場合は何もしない
+	if !notificationEnabled {
+		return
+	}
+
+	log.Printf("[TTS] 音声合成: %s", text)
+
+	// 非同期で音声合成を実行（メインスレッドをブロックしない）
+	go func() {
+		platformSpeakText(text)
+	}()
 }

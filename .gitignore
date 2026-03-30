@@ -9,13 +9,32 @@
 bin/
 main
 streamdeck-twitch
+streamdeck-twitch-fixed
+streamdeck-twitch-improved
 
 # Test binary, built with 'go test -c'
 *.test
 
 # Output of the go coverage tool, consumed by 'go tool cover -'
 *.out
+
+# IDE files
 .idea/
 .vscode/
 *.swp
+*.swo
+
+# Cache and temporary files
 cache/
+logs/
+/tmp/
+*.wav
+*.bak
+
+# Configuration files with secrets
+.env
+config.json
+*.token
+
+# Go modules
+go.sum
