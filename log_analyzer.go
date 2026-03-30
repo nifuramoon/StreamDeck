@@ -168,12 +168,19 @@ func (la *LogAnalyzer) applyAutomaticFixes(errorCounts map[string]int) {
 func (la *LogAnalyzer) fixMissingScopes() {
 	log.Println("[LOG ANALYZER] Attempting to fix missing scopes...")
 
-	// Check current config
+	// Check current config (DO NOT overwrite user's scope settings)
 	config := loadConfigFromFile()
 	if config.Scope == "" {
+		// Only set default scope if it's truly empty
 		config.Scope = "user:read:email user:read:follows user:read:broadcast"
 		saveConfig(config)
-		log.Println("[LOG ANALYZER] Updated scope in config file")
+		log.Println("[LOG ANALYZER] Set default scope in config file (was empty)")
+	} else {
+		// Respect user's scope setting - update global variable if needed
+		if SCOPE == "" || SCOPE == getEnvWithDefault("TWITCH_SCOPE", "") {
+			SCOPE = config.Scope
+			log.Printf("[LOG ANALYZER] Using scope from config: %s", config.Scope)
+		}
 	}
 
 	// If token exists but has wrong scope, suggest re-auth

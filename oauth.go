@@ -13,8 +13,7 @@ import (
 
 // OAuth関連のグローバル変数
 var (
-	oauthClientID     = CID
-	oauthClientSecret = CS
+	// Note: oauthClientID and oauthClientSecret are now retrieved from CID and CS at runtime
 	oauthScope        = "user:read:email user:read:follows user:read:broadcast" // 必要なスコープ
 	oauthCode         = ""
 	oauthAccessToken  = AT
@@ -26,17 +25,36 @@ var (
 	// 環境変数がなくてもOAuthを試行できるようにするための一時変数
 	tempClientID     = ""
 	tempClientSecret = ""
-
-	// Token manager
-	tokenManager *TokenManager
 )
 
 // startOAuth starts the OAuth flow by opening browser
 func startOAuth() {
-	// 使用するClient IDを決定（環境変数または一時変数）
-	clientID := oauthClientID
-	if clientID == "" && tempClientID != "" {
+	// Check if we have client ID and secret
+	clientID := CID
+	clientSecret := CS
+
+	log.Printf("[OAuth Debug] CID='%s', CS='%s', SCOPE='%s'", CID, CS, SCOPE)
+	log.Printf("[OAuth Debug] tempClientID='%s', tempClientSecret='%s'", tempClientID, tempClientSecret)
+
+	// If global variables are empty, check temporary ones
+	if clientID == "" {
 		clientID = tempClientID
+		log.Printf("[OAuth Debug] Using tempClientID: %s", clientID)
+	}
+	if clientSecret == "" {
+		clientSecret = tempClientSecret
+		log.Printf("[OAuth Debug] Using tempClientSecret: %s", maskString(clientSecret))
+	}
+
+	if clientID == "" {
+		log.Println("================================================")
+		log.Println("[OAuth] ERROR: Client ID not set")
+		log.Println("[OAuth] CID variable value: ", CID)
+		log.Println("[OAuth] tempClientID value: ", tempClientID)
+		log.Println("[OAuth] Check config file at: ~/.config/streamdeck-twitch/config.json")
+		log.Println("[OAuth] Restart application and run interactive setup")
+		log.Println("================================================")
+		return
 	}
 
 	if clientID == "" {
@@ -47,10 +65,13 @@ func startOAuth() {
 		return
 	}
 
-	// Use scope from config or default
+	// Use scope from config if available, otherwise use default oauthScope
 	scope := oauthScope
 	if SCOPE != "" {
 		scope = SCOPE
+		log.Printf("[OAuth Debug] Using scope: %s", scope)
+	} else {
+		log.Printf("[OAuth Debug] Using default oauthScope: %s", scope)
 	}
 
 	// Check if scope is complete, if not, add missing scopes
@@ -127,8 +148,8 @@ func getTokenFromClipboard() {
 // exchangeCodeForTokens exchanges authorization code for access tokens
 func exchangeCodeForTokens(code string) {
 	// 使用するClient IDとSecretを決定
-	clientID := oauthClientID
-	clientSecret := oauthClientSecret
+	clientID := CID
+	clientSecret := CS
 
 	// 環境変数がない場合は一時変数を使用（現時点では一時変数は空）
 	if clientID == "" || clientSecret == "" {
@@ -181,13 +202,13 @@ func exchangeCodeForTokens(code string) {
 
 // getUserInfo gets user info using the access token
 func getUserInfo() {
-	if oauthClientID == "" || oauthAccessToken == "" {
+	if CID == "" || oauthAccessToken == "" {
 		return
 	}
 
 	log.Println("[OAuth] ユーザー情報取得中...")
 	req, _ := http.NewRequest("GET", "https://api.twitch.tv/helix/users", nil)
-	req.Header.Set("Client-ID", oauthClientID)
+	req.Header.Set("Client-ID", CID)
 	req.Header.Set("Authorization", "Bearer "+oauthAccessToken)
 
 	client := &http.Client{Timeout: 10 * time.Second}
@@ -225,11 +246,30 @@ func saveEnvVars() {
 	envCount := 0
 	configCount := 0
 
+	log.Printf("[OAuth Debug] saveEnvVars called: CID='%s', CS='%s', tempClientID='%s', tempClientSecret='%s'",
+		maskString(CID), maskString(CS), tempClientID, maskString(tempClientSecret))
+
+	// Determine which values to save
+	// Priority: temp values > current global values
+	saveClientID := CID
+	saveClientSecret := CS
+
+	if tempClientID != "" {
+		saveClientID = tempClientID
+		log.Printf("[OAuth] Using tempClientID for save: %s", maskString(tempClientID))
+	}
+	if tempClientSecret != "" {
+		saveClientSecret = tempClientSecret
+		log.Printf("[OAuth] Using tempClientSecret for save")
+	}
+
 	// Save to environment variables
-	if oauthClientID != "" && setEnvVar("TWITCH_CLIENT_ID", oauthClientID) {
+	if saveClientID != "" && setEnvVar("TWITCH_CLIENT_ID", saveClientID) {
+		log.Println("[OAuth] Saved Client ID to environment")
 		envCount++
 	}
-	if oauthClientSecret != "" && setEnvVar("TWITCH_CLIENT_SECRET", oauthClientSecret) {
+	if saveClientSecret != "" && setEnvVar("TWITCH_CLIENT_SECRET", saveClientSecret) {
+		log.Println("[OAuth] Saved Client Secret to environment")
 		envCount++
 	}
 	if SCOPE != "" && setEnvVar("TWITCH_SCOPE", SCOPE) {
@@ -245,17 +285,61 @@ func saveEnvVars() {
 		envCount++
 	}
 
-	// Also save to config file
-	config := Config{
-		ClientID:     oauthClientID,
-		ClientSecret: oauthClientSecret,
-		Scope:        SCOPE,
+	// Save to config file, but preserve existing settings
+	// Load existing config first
+	existingConfig := loadConfigFromFile()
+	if existingConfig.ClientID == "" && existingConfig.ClientSecret == "" {
+		// No existing config, create new one
+		config := Config{
+			ClientID:     saveClientID,
+			ClientSecret: saveClientSecret,
+			Scope:        SCOPE,
+		}
+
+		// Check if we're trying to save default values
+		isDefaultCID := saveClientID == "zl3bbnc9ja0mdawfba3rar9jokjb0f"
+		isDefaultCS := saveClientSecret == "vo9ks19oyb8x2uha040245pj9s2klv"
+
+		if isDefaultCID || isDefaultCS {
+			log.Println("[OAuth] Warning: Trying to save default values to config. Skipping config save.")
+			log.Println("[OAuth] Please enter your actual Twitch Client ID and Secret first.")
+		} else if saveConfig(config) {
+			configCount++
+			log.Println("[OAuth] Created new config file with provided credentials")
+		}
+	} else {
+		// Update existing config ONLY for Client ID/Secret (not scope)
+		// and ONLY if they're not default values
+		updated := false
+
+		if saveClientID != "" && saveClientID != "zl3bbnc9ja0mdawfba3rar9jokjb0f" && existingConfig.ClientID != saveClientID {
+			existingConfig.ClientID = saveClientID
+			updated = true
+			log.Println("[OAuth] Updated Client ID in config")
+		}
+
+		if saveClientSecret != "" && saveClientSecret != "vo9ks19oyb8x2uha040245pj9s2klv" && existingConfig.ClientSecret != saveClientSecret {
+			existingConfig.ClientSecret = saveClientSecret
+			updated = true
+			log.Println("[OAuth] Updated Client Secret in config")
+		}
+
+		// NEVER update scope from token scope in config.json
+		// Config scope is user's desired permissions, token scope is granted permissions
+		log.Printf("[OAuth Debug] Config scope preserved (not updated from token): %s", existingConfig.Scope)
+
+		if updated {
+			if saveConfig(existingConfig) {
+				configCount++
+				log.Println("[OAuth] Updated existing config file")
+			}
+		} else {
+			log.Println("[OAuth] No changes to save in config file")
+		}
 	}
 
-	if saveConfig(config) {
-		configCount++
-
-		// Save to token manager with backup
+	// Save to token manager with backup (if we have tokens)
+	if oauthAccessToken != "" {
 		if tokenManager == nil {
 			tokenManager = NewTokenManager()
 		}
@@ -266,7 +350,7 @@ func saveEnvVars() {
 			UserID:       oauthUserID,
 			LoginName:    oauthLoginName,
 			DisplayName:  oauthDisplayName,
-			ClientID:     oauthClientID,
+			ClientID:     CID,
 			Scope:        SCOPE,
 			ExpiresAt:    time.Now().Add(24 * time.Hour), // Twitch tokens typically last 24 hours
 			CreatedAt:    time.Now(),

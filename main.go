@@ -60,14 +60,14 @@ const (
 )
 
 var (
-	// デフォルト値（ユーザーが環境変数や設定ファイルで上書き可能）
-	CID   = getEnvWithDefault("TWITCH_CLIENT_ID", "zl3bbnc9ja0mdawfba3rar9jokjb0f")
-	CS    = getEnvWithDefault("TWITCH_CLIENT_SECRET", "vo9ks19oyb8x2uha040245pj9s2klv")
-	SCOPE = getEnvWithDefault("TWITCH_SCOPE", "user:read:email user:read:follows user:read:broadcast user:write:chat chat:read")
-	AT    = os.Getenv("TWITCH_ACCESS_TOKEN")
-	RT    = os.Getenv("TWITCH_REFRESH_TOKEN")
-	UID   = os.Getenv("TWITCH_USER_ID")
-	IRC_T = os.Getenv("TWITCH_IRC_TOKEN")
+	// グローバル変数（main関数内で初期化）
+	CID   string
+	CS    string
+	SCOPE string
+	AT    string
+	RT    string
+	UID   string
+	IRC_T string
 )
 
 var EMOTES = []string{"BloodTrail", "HeyGuys", "LUL", "DinoDance", "HungryPaimon", "GlitchCat"}
@@ -124,6 +124,9 @@ var (
 
 	// Log analyzer for automatic error detection and fixes
 	logAnalyzer *LogAnalyzer
+
+	// Token manager for OAuth token handling
+	tokenManager *TokenManager
 
 	// Debug mode flag - set to true for verbose logging
 	debugMode = false
@@ -361,6 +364,18 @@ func init() {
 }
 
 func main() {
+	// Initialize global variables with proper priority:
+	// 1. Environment variables
+	// 2. Config file
+	// 3. Default values
+	CID = getEnvWithDefault("TWITCH_CLIENT_ID", "zl3bbnc9ja0mdawfba3rar9jokjb0f")
+	CS = getEnvWithDefault("TWITCH_CLIENT_SECRET", "vo9ks19oyb8x2uha040245pj9s2klv")
+	SCOPE = getEnvWithDefault("TWITCH_SCOPE", "user:read:email user:read:follows user:read:broadcast user:write:chat chat:read")
+	AT = os.Getenv("TWITCH_ACCESS_TOKEN")
+	RT = os.Getenv("TWITCH_REFRESH_TOKEN")
+	UID = os.Getenv("TWITCH_USER_ID")
+	IRC_T = os.Getenv("TWITCH_IRC_TOKEN")
+
 	// Auto-fix mode check
 	if len(os.Args) > 1 && os.Args[1] == "--auto-fix" {
 		infoLog("自動修正モードで起動")
@@ -393,9 +408,12 @@ func main() {
 			RT = token.RefreshToken
 			UID = token.UserID
 			CID = token.ClientID
-			SCOPE = token.Scope
+			// DO NOT update SCOPE from token - keep config.json scope
+			// SCOPE = token.Scope  // COMMENTED OUT - preserve config scope
 
 			log.Printf("[Token] Using valid token for user: %s (%s)", token.DisplayName, token.LoginName)
+			log.Printf("[Token Debug] Token scope: %s (not updating global SCOPE)", token.Scope)
+			log.Printf("[Token Debug] Config scope (preserved): %s", SCOPE)
 			tokenManager.UpdateLastUsed()
 		} else {
 			log.Printf("[Token] Token validation failed: %s", reason)
@@ -403,6 +421,14 @@ func main() {
 			log.Println("[Token] Please re-authenticate using OAuth button")
 			AT = "" // Clear invalid token
 		}
+	}
+
+	// After token manager load, ensure SCOPE is set from config.json, not token
+	// Reload config to get the correct scope
+	config := loadConfigFromFile()
+	if config.Scope != "" {
+		SCOPE = config.Scope
+		log.Printf("[Config] Reset SCOPE from config after token load: %s", SCOPE)
 	}
 
 	loadFonts()

@@ -36,27 +36,60 @@ func initConfig() {
 func loadConfig() bool {
 	initConfig()
 
+	log.Printf("[Config Debug] Loading config from: %s", configPath)
+
 	// Load main config
 	data, err := os.ReadFile(configPath)
 	if err != nil {
+		log.Printf("[Config Debug] Failed to read config file: %v", err)
 		return false
 	}
+
+	log.Printf("[Config Debug] Config file content: %s", string(data))
 
 	var config Config
 	if err := json.Unmarshal(data, &config); err != nil {
+		log.Printf("[Config Debug] Failed to parse config JSON: %v", err)
 		return false
 	}
 
-	// Update global variables if environment variables are not set
-	if CID == "" && config.ClientID != "" {
+	log.Printf("[Config Debug] Parsed config: ClientID='%s', ClientSecret='%s', Scope='%s'",
+		maskString(config.ClientID), maskString(config.ClientSecret), config.Scope)
+
+	// Update global variables from config file
+	// Priority: Environment variable > Config file > Default
+	// But for scope, config file should override default if explicitly set
+
+	log.Printf("[Config Debug] Before update: CID='%s', CS='%s', SCOPE='%s'", CID, CS, SCOPE)
+	log.Printf("[Config Debug] Config file: ClientID='%s', ClientSecret='%s', Scope='%s'",
+		config.ClientID, config.ClientSecret, config.Scope)
+	log.Printf("[Config Debug] Env vars: TWITCH_CLIENT_ID='%s', TWITCH_CLIENT_SECRET='%s', TWITCH_SCOPE='%s'",
+		os.Getenv("TWITCH_CLIENT_ID"), os.Getenv("TWITCH_CLIENT_SECRET"), os.Getenv("TWITCH_SCOPE"))
+
+	if config.ClientID != "" && os.Getenv("TWITCH_CLIENT_ID") == "" {
 		CID = config.ClientID
+		log.Printf("[Config] Set CID from config: %s", maskString(config.ClientID))
 	}
-	if CS == "" && config.ClientSecret != "" {
+	if config.ClientSecret != "" && os.Getenv("TWITCH_CLIENT_SECRET") == "" {
 		CS = config.ClientSecret
+		log.Printf("[Config] Set CS from config: %s", maskString(config.ClientSecret))
 	}
-	if SCOPE == "" && config.Scope != "" {
-		SCOPE = config.Scope
+	if config.Scope != "" {
+		// Config file scope always wins over default (but not over env var)
+		if os.Getenv("TWITCH_SCOPE") == "" {
+			SCOPE = config.Scope
+			log.Printf("[Config] Using scope from config: %s", config.Scope)
+		}
+	} else {
+		// If config doesn't have scope, but we want to ensure it's set
+		if SCOPE == "" {
+			SCOPE = "user:read:email user:read:follows user:read:broadcast user:write:chat chat:read"
+			log.Printf("[Config] Using default scope: %s", SCOPE)
+		}
 	}
+
+	log.Printf("[Config Debug] After update: CID='%s', CS='%s', SCOPE='%s'",
+		maskString(CID), maskString(CS), SCOPE)
 
 	// Load notification setting
 	if config.NotificationsEnabled {
@@ -102,6 +135,14 @@ func saveConfig(config Config) bool {
 
 	log.Printf("[Config] 設定を保存しました: %s", configPath)
 	return true
+}
+
+// maskString masks sensitive strings for logging
+func maskString(s string) string {
+	if len(s) <= 8 {
+		return "***"
+	}
+	return s[:4] + "..." + s[len(s)-4:]
 }
 
 // saveNotificationSetting saves the notification setting to config file
@@ -187,12 +228,28 @@ func checkAndSetupConfig() bool {
 		return true
 	}
 
-	// Check if we have default values (not empty strings)
-	hasDefaults := CID != "" && CID != "zl3bbnc9ja0mdawfba3rar9jokjb0f" &&
-		CS != "" && CS != "vo9ks19oyb8x2uha040245pj9s2klv"
+	// Check if config file exists
+	if _, err := os.Stat(configPath); err == nil {
+		// Config file exists but couldn't be loaded - this is an error
+		log.Printf("[Config] 設定ファイルが存在しますが読み込めません: %s", configPath)
+		log.Println("[Config] 設定ファイルを確認または削除してください")
+		return false
+	}
 
-	// If we have defaults from environment or the function itself, we're good
-	if CID != "" && CS != "" && hasDefaults {
+	// Check if we have values from environment variables
+	hasEnvVars := os.Getenv("TWITCH_CLIENT_ID") != "" || os.Getenv("TWITCH_CLIENT_SECRET") != ""
+
+	// If we have environment variables, we're good
+	if hasEnvVars {
+		log.Println("[Config] 環境変数から設定を読み込みました")
+		return true
+	}
+
+	// Check if we have non-default values (not the hardcoded defaults)
+	hasNonDefaultCID := CID != "" && CID != "zl3bbnc9ja0mdawfba3rar9jokjb0f"
+	hasNonDefaultCS := CS != "" && CS != "vo9ks19oyb8x2uha040245pj9s2klv"
+
+	if hasNonDefaultCID && hasNonDefaultCS {
 		// Helper function to get min of two ints
 		minLen := 8
 		if len(CID) < 8 {
