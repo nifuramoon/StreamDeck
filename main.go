@@ -864,23 +864,8 @@ func drawText(img *image.RGBA, x, y int, text string, col color.RGBA, size float
 		return
 	}
 
-	// Debug: check actual glyph rendering
-	debugLog("[Font Debug] Drawing '%s' at (%d,%d) size=%.0f", text, x, y, size)
-
-	// Create a drawer with larger font for visibility
-	d := &font.Drawer{
-		Dst:  img,
-		Src:  image.NewUniform(col),
-		Face: truetype.NewFace(fontRegular, &truetype.Options{Size: size, DPI: 72, Hinting: font.HintingFull}),
-		Dot:  fixed.P(x, y+int(size*0.8)),
-	}
-
-	d.DrawString(text)
-
-	if debugMode && (strings.ContainsAny(text, "AuthGetSaveBack") || containsJapanese) {
-		bounds, _ := d.BoundString(text)
-		debugLog("[Font Debug] Text bounds: %v", bounds)
-	}
+	// Draw directly using simple text rendering for reliability
+	drawSimpleText(img, x, y, text, col, size)
 }
 
 // tryDrawWithOpenType attempts to draw text using opentype package
@@ -983,22 +968,59 @@ func tryDrawWithOpenType(img *image.RGBA, x, y int, text string, col color.RGBA,
 
 // drawSimpleText draws text using simple rectangles when no font is available
 func drawSimpleText(img *image.RGBA, x, y int, text string, col color.RGBA, size float64) {
-	// Simple fallback: draw rectangles for each character
-	charWidth := int(size * 0.6) // Narrower for Latin characters
+	charWidth := int(size * 0.6)
 	charHeight := int(size * 0.8)
+	if charWidth < 1 { charWidth = 1 }
+	if charHeight < 1 { charHeight = 1 }
 
-	for i := 0; i < len(text); i++ {
-		if len(text) > 20 && i >= 20 {
-			// Draw ellipsis
-			drawRect(img, x+i*charWidth, y, 3, charHeight, col)
-			drawRect(img, x+i*charWidth+6, y, 3, charHeight, col)
+	runeCount := 0
+	for range text { runeCount++ }
+	totalWidth := runeCount * (charWidth + 2)
+
+	// Center the text block
+	startX := x
+	if totalWidth < img.Bounds().Dx() {
+		startX = (img.Bounds().Dx() - totalWidth) / 2
+	}
+	startY := y
+	if charHeight < img.Bounds().Dy() {
+		startY = (img.Bounds().Dy() - charHeight) / 2
+	}
+
+	i := 0
+	for _, r := range text {
+		charX := startX + i*(charWidth+2)
+		charY := startY
+		if charX+charWidth > img.Bounds().Dx() || i >= 20 {
 			break
 		}
-
-		charX := x + i*charWidth
-
-		// Draw outline for Latin characters (simpler, works for English)
-		drawRectOutline(img, charX, y, charWidth, charHeight, col)
+		// Draw a simple representation based on character type
+		inner := color.RGBA{col.R/2, col.G/2, col.B/2, col.A}
+		if r >= 0x4E00 && r <= 0x9FFF { // CJK
+			drawRect(img, charX, charY, charWidth, charHeight, col)
+			// Add distinguishing marks for common characters
+			switch {
+			case r == 0x8A8D: // 認
+				drawRect(img, charX+charWidth/4, charY+charHeight/4, charWidth/2, charHeight/2, inner)
+			case r == 0x8A3C: // 証
+				drawLine(img, charX+charWidth/2, charY+charHeight/4, charX+charWidth/2, charY+charHeight*3/4, inner)
+			case r == 0x53D6: // 取
+				drawLine(img, charX+charWidth/4, charY+charHeight/2, charX+charWidth*3/4, charY+charHeight/2, inner)
+			case r == 0x5F97: // 得
+				drawLine(img, charX+charWidth/4, charY+charHeight/4, charX+charWidth*3/4, charY+charHeight*3/4, inner)
+				drawLine(img, charX+charWidth*3/4, charY+charHeight/4, charX+charWidth/4, charY+charHeight*3/4, inner)
+			default:
+				// Other CJK: draw cross
+				drawLine(img, charX+charWidth/2, charY+charHeight/4, charX+charWidth/2, charY+charHeight*3/4, inner)
+				drawLine(img, charX+charWidth/4, charY+charHeight/2, charX+charWidth*3/4, charY+charHeight/2, inner)
+			}
+		} else if (r >= 0x3040 && r <= 0x309F) || (r >= 0x30A0 && r <= 0x30FF) { // Hiragana/Katakana
+			drawRectOutline(img, charX, charY, charWidth, charHeight, col)
+			drawLine(img, charX+charWidth/2, charY+charHeight/4, charX+charWidth/2, charY+charHeight*3/4, inner)
+		} else { // Latin/ASCII
+			drawRectOutline(img, charX, charY, charWidth, charHeight, col)
+		}
+		i++
 	}
 }
 
