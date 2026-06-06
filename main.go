@@ -841,12 +841,12 @@ func drawText(img *image.RGBA, x, y int, text string, col color.RGBA, size float
 	face := truetype.NewFace(fontRegular, &truetype.Options{
 		Size:    size,
 		DPI:     72,
-		Hinting: font.HintingFull,
+		Hinting: font.HintingNone,
 	})
 	defer face.Close()
 
 	// Test if font can render the first character
-	canRender := !containsJapanese // Only render non-Japanese with freetype
+	canRender := true
 	if containsJapanese && len(text) > 0 {
 		r := []rune(text)[0]
 		advance, ok := face.GlyphAdvance(r)
@@ -867,15 +867,8 @@ func drawText(img *image.RGBA, x, y int, text string, col color.RGBA, size float
 	// Debug: check actual glyph rendering
 	debugLog("[Font Debug] Drawing '%s' at (%d,%d) size=%.0f, font=%v", text, x, y, size, fontRegular != nil)
 
-	// Draw with truetype
-	drawFace := truetype.NewFace(fontRegular, &truetype.Options{Size: size, DPI: 72, Hinting: font.HintingFull})
-	d := &font.Drawer{
-		Dst:  img,
-		Src:  image.NewUniform(col),
-		Face: drawFace,
-		Dot:  fixed.P(x, y+int(size*0.9)),
-	}
-	d.DrawString(text)
+	// Draw with simple text (DrawString has color issues on this system)
+	drawSimpleText(img, x, y, text, col, size)
 }
 
 // tryDrawWithOpenType attempts to draw text using opentype package
