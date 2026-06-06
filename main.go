@@ -558,40 +558,33 @@ func loadFonts() {
 	candidates := platformLoadFontPaths()
 	debugLog("Searching for fonts in %d paths...", len(candidates))
 
-	// まず.ttfファイルを探す（.ttcファイルより優先）
-	ttfFiles := []string{}
-	ttcFiles := []string{}
-
+	// Try TTC files first (Japanese fonts)
 	for _, p := range candidates {
-		if _, err := os.Stat(p); err == nil {
-			if strings.HasSuffix(strings.ToLower(p), ".ttf") {
-				ttfFiles = append(ttfFiles, p)
-			} else if strings.HasSuffix(strings.ToLower(p), ".ttc") || strings.HasSuffix(strings.ToLower(p), ".otf") {
-				ttcFiles = append(ttcFiles, p)
+		if strings.HasSuffix(strings.ToLower(p), ".ttc") {
+			if tryLoadFirstFontFromTTC(p) {
+				infoLog("Loaded Japanese font: %s", filepath.Base(p))
+				return
 			}
 		}
 	}
 
-	// .ttfファイルを先に試す
-	allFiles := append(ttfFiles, ttcFiles...)
-
-	// 方法1: opentypeパッケージで試す（より良いサポート）
-	for i, p := range allFiles {
+	// Try .ttf and .otf files
+	for _, p := range candidates {
+		if !strings.HasSuffix(strings.ToLower(p), ".ttf") && !strings.HasSuffix(strings.ToLower(p), ".otf") {
+			continue
+		}
 		if data, err := os.ReadFile(p); err == nil {
 			// Try opentype first (better support)
 			if f, err := opentype.Parse(data); err == nil {
-				// Create face with appropriate size
 				face, err := opentype.NewFace(f, &opentype.FaceOptions{
 					Size:    14,
 					DPI:     72,
 					Hinting: font.HintingFull,
 				})
 				if err == nil {
-					// We need to store the parsed font for later use
-					// For now, use freetype to store the font
 					if tf, err := freetype.ParseFont(data); err == nil {
 						fontRegular, fontSmall = tf, tf
-						infoLog("Loaded font with opentype: %s (file %d/%d)", filepath.Base(p), i+1, len(allFiles))
+						infoLog("Loaded font with opentype: %s", filepath.Base(p))
 
 						// デバッグモード時のみ詳細情報を表示
 						if debugMode {
@@ -617,9 +610,14 @@ func loadFonts() {
 						}
 
 						// Test Japanese character support
-						testJapaneseText(face)
+						if testJapaneseText(face) {
+							face.Close()
+							return
+						}
+						// Japanese not supported, try next font
 						face.Close()
-						return
+						fontRegular = nil
+						fontSmall = nil
 					}
 					face.Close()
 				}
@@ -628,11 +626,14 @@ func loadFonts() {
 	}
 
 	// 方法2: 従来のfreetypeで試す
-	for i, p := range allFiles {
+	for _, p := range candidates {
+		if !strings.HasSuffix(strings.ToLower(p), ".ttf") && !strings.HasSuffix(strings.ToLower(p), ".otf") {
+			continue
+		}
 		if data, err := os.ReadFile(p); err == nil {
 			if f, err := freetype.ParseFont(data); err == nil {
 				fontRegular, fontSmall = f, f
-				log.Printf("[Font] ✅ Loaded with freetype: %s (file %d/%d)", p, i+1, len(allFiles))
+				log.Printf("[Font] ✅ Loaded with freetype: %s", filepath.Base(p))
 
 				// フォント名を詳細に確認
 				if name := f.Name(truetype.NameIDFontFullName); name != "" {
@@ -645,10 +646,17 @@ func loadFonts() {
 					log.Printf("[Font] Font subfamily: %s", subfamily)
 				}
 
-				// フォントの情報を確認
 				log.Printf("[Font] Font index: %d", f.FUnitsPerEm())
 
-				return
+				// Test Japanese support before accepting
+				face := truetype.NewFace(f, &truetype.Options{Size: 14, DPI: 72})
+				if testJapaneseText(face) {
+					face.Close()
+					return
+				}
+				face.Close()
+				fontRegular = nil
+				fontSmall = nil
 			} else {
 				// .ttcファイルの場合は別の方法を試す
 				if strings.HasSuffix(strings.ToLower(p), ".ttc") {
@@ -672,7 +680,7 @@ func loadFonts() {
 }
 
 // testJapaneseText tests if the font can render Japanese characters
-func testJapaneseText(face font.Face) {
+func testJapaneseText(face font.Face) bool {
 	testStrings := []string{"認", "証", "取", "得", "保", "存", "戻", "る", "日", "本", "語", "Auth", "Get", "Save", "Back"}
 
 	supportedCount := 0
@@ -698,65 +706,53 @@ func testJapaneseText(face font.Face) {
 
 	if supportPercent < 50 {
 		log.Printf("[Font Test] ⚠️  Font has limited Japanese support. Trying next font...")
+		return false
 	}
+	log.Printf("[Font Test] ✅ Font supports Japanese: %.1f%%", supportPercent)
+	return true
 }
 
 // tryLoadFirstFontFromTTC tries to load the first font from a TrueType Collection
 func tryLoadFirstFontFromTTC(path string) bool {
-	// Try to load TTC file using a different approach
-	log.Printf("[Font] Attempting to load TTC file: %s", path)
-
-	// Read the TTC file
 	data, err := os.ReadFile(path)
-	if err != nil {
-		log.Printf("[Font] ❌ Failed to read TTC file: %v", err)
-		return false
-	}
+	if err != nil { return false }
 
-	// Try to parse as a collection first
-	// Note: freetype doesn't support TTC directly, but we can try to find the first font
-	// TTC files have a "ttcf" header
-	if len(data) >= 12 && string(data[:4]) == "ttcf" {
-		log.Printf("[Font] ✅ Detected TTC file with 'ttcf' header")
-
-		// Try to extract the first font offset
-		// TTC header format: "ttcf" (4 bytes), version (4 bytes), numFonts (4 bytes), offsets[numFonts] (each 4 bytes)
-		if len(data) >= 12 {
-			numFonts := int(binary.BigEndian.Uint32(data[8:12]))
-			log.Printf("[Font] TTC contains %d fonts", numFonts)
-
-			if numFonts > 0 && len(data) >= 12+4*numFonts {
-				firstOffset := binary.BigEndian.Uint32(data[12:16])
-				if int(firstOffset) < len(data) {
-					// Try to parse the first font
-					fontData := data[firstOffset:]
-					if f, err := freetype.ParseFont(fontData); err == nil {
+	// TTC: "ttcf" header, version, numFonts, offsets[numFonts], fontData...
+	if len(data) >= 16 && string(data[:4]) == "ttcf" {
+		numFonts := int(binary.BigEndian.Uint32(data[8:12]))
+		if numFonts > 0 {
+			// Calculate offset and size for first font
+			startOff := int(binary.BigEndian.Uint32(data[12:16]))
+			endOff := len(data)
+			if numFonts > 1 {
+				endOff = int(binary.BigEndian.Uint32(data[16:20]))
+			}
+			if startOff < len(data) && endOff <= len(data) && endOff > startOff {
+				fontData := data[startOff:endOff]
+				if f, err := freetype.ParseFont(fontData); err == nil {
+					fontRegular, fontSmall = f, f
+					log.Printf("[Font] ✅ Japanese font from TTC: %s", filepath.Base(path))
+					return true
+				}
+				// Try with offset correction for SFNT header
+				// Some TTC store offset from file start, some need 4-byte alignment
+				for _, delta := range []int{0, -startOff} {
+					if delta == 0 { continue }
+					adjusted := make([]byte, endOff-startOff)
+					copy(adjusted, data[startOff:endOff])
+					if f, err := freetype.ParseFont(adjusted); err == nil {
 						fontRegular, fontSmall = f, f
-						log.Printf("[Font] ✅ Successfully loaded first font from TTC collection")
-						if name := f.Name(truetype.NameIDFontFullName); name != "" {
-							log.Printf("[Font] Font name: %s", name)
-						}
 						return true
-					} else {
-						log.Printf("[Font] ❌ Failed to parse first font in TTC: %v", err)
 					}
 				}
 			}
 		}
 	}
-
-	// If that doesn't work, try parsing the whole file as a regular font
-	// (some TTC files might be parseable as single fonts)
+	// Try direct parse (some TTC work as single font)
 	if f, err := freetype.ParseFont(data); err == nil {
 		fontRegular, fontSmall = f, f
-		log.Printf("[Font] ✅ Loaded TTC file as single font")
-		if name := f.Name(truetype.NameIDFontFullName); name != "" {
-			log.Printf("[Font] Font name: %s", name)
-		}
 		return true
 	}
-
-	log.Printf("[Font] ❌ Failed to load TTC file using any method")
 	return false
 }
 func measureText(text string, size float64) int {
