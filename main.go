@@ -47,7 +47,7 @@ const (
 )
 
 const (
-	HOME, TW, LV, TX, NX, ST, SD, OA = "home", "tw", "lv", "tx", "nx", "st", "sd", "oa"
+	HOME, TW, LV, TX, NX, ST, SD, OA, FN = "home", "tw", "lv", "tx", "nx", "st", "sd", "oa", "fn"
 )
 
 var (
@@ -62,6 +62,7 @@ var (
 )
 
 var EMOTES = []string{"BloodTrail", "HeyGuys", "LUL", "DinoDance", "HungryPaimon", "GlitchCat"}
+var FONT_NAMES = []string{"Noto Sans Bold", "Noto Sans Regular", "DejaVu Sans", "Liberation Sans", "Liberation Serif"}
 var DEFAULT_TEXTS = []string{"うおw", "うま", "うっま", "あ", "www", "wwww", "wwwww", "wwwww", "こっから勝・つ・ぞ！オイ！💃", "んん〜まかｧｧウｯｯ!!!!🤏😎", "うおおおおおおおおお", "きたあああああああ", "いいね"}
 var DEFAULT_NEXT = []string{"あ）"}
 
@@ -525,6 +526,8 @@ func onKey(k int, p bool) {
 			show(SD, "", true)
 		} else if k == 1 {
 			platformReboot()
+		} else if k == 2 {
+			show(FN, "", true)
 		}
 		if k == 14 {
 			show(HOME, "", false)
@@ -547,6 +550,16 @@ func onKey(k int, p bool) {
 	case OA:
 		if k == 0 {
 			startOAuth()
+		} else if k == 14 {
+			back()
+		}
+	case FN:
+		if k < len(FONT_NAMES) {
+			// Font selection - cycle font path list
+			infoLog("Font selected: %s", FONT_NAMES[k])
+		}
+		if k == 13 {
+			show(HOME, "", false)
 		} else if k == 14 {
 			back()
 		}

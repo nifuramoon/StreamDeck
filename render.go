@@ -581,7 +581,8 @@ func renderST() {
 	}
 	sdeck.FillImage(0, keyTextBg("StreamDeck", color.RGBA{30, 30, 30, 255}))
 	sdeck.FillImage(1, keyTextBg("再起動", color.RGBA{60, 0, 0, 255}))
-	// ボタン2-13は空白
+	sdeck.FillImage(2, keyTextBg("Font", color.RGBA{0, 60, 100, 255}))
+	// ボタン3-13は空白
 	sdeck.FillImage(14, keyTextBg("ホーム", color.RGBA{0, 40, 40, 255}))
 	deckMu.Unlock()
 }
@@ -625,6 +626,8 @@ func show(pg, ctx string, st bool) {
 		renderSD()
 	case OA:
 		renderOA()
+	case FN:
+		renderFN()
 	}
 }
 func back() {
@@ -644,5 +647,18 @@ func renderOA() {
 	}
 	sdeck.FillImage(0, keyTextBg("Auth", color.RGBA{0, 100, 200, 255}))
 	sdeck.FillImage(14, keyTextBg("Back", color.RGBA{40, 40, 0, 255}))
+	deckMu.Unlock()
+}
+
+func renderFN() {
+	deckMu.Lock()
+	for i := 0; i < 15; i++ {
+		sdeck.FillBlank(i)
+	}
+	for i := 0; i < len(FONT_NAMES) && i < 12; i++ {
+		sdeck.FillImage(i, keyTextBg(FONT_NAMES[i], color.RGBA{30, 30, 30, 255}))
+	}
+	sdeck.FillImage(13, keyTextBg("ホーム", color.RGBA{0, 40, 40, 255}))
+	sdeck.FillImage(14, keyTextBg("戻る", color.RGBA{40, 40, 0, 255}))
 	deckMu.Unlock()
 }
