@@ -731,117 +731,87 @@ func measureText(text string, size float64) int {
 	return font.MeasureString(face, text).Ceil()
 }
 func drawText(img *image.RGBA, x, y int, text string, col color.RGBA, size float64) {
-	if fontRegular == nil {
-		// Fallback: draw simple rectangles for characters
-		drawSimpleText(img, x, y, text, col, size)
-		return
-	}
-
-	// Check if text contains Japanese characters
-	containsJapanese := false
-	for _, r := range text {
-		// Check for CJK characters (Japanese, Chinese, Korean)
-		if (r >= 0x4E00 && r <= 0x9FFF) || // CJK Unified Ideographs
-			(r >= 0x3040 && r <= 0x309F) || // Hiragana
-			(r >= 0x30A0 && r <= 0x30FF) || // Katakana
-			(r >= 0xFF00 && r <= 0xFFEF) { // Halfwidth and Fullwidth Forms
-			containsJapanese = true
-			break
-		}
-	}
-
-	// Try multiple approaches for rendering
-
-	// アプローチ1: freetype/truetypeを使用（LiberationSansはfreetypeで読み込み済み）
-	face := truetype.NewFace(fontRegular, &truetype.Options{
-		Size:    size,
-		DPI:     72,
-		Hinting: font.HintingNone,
-	})
-	defer face.Close()
-
-	// Test if font can render the first character
-	canRender := true
-	if containsJapanese && len(text) > 0 {
-		r := []rune(text)[0]
-		advance, ok := face.GlyphAdvance(r)
-		if !ok || advance == 0 {
-			canRender = false
-		}
-	}
-
-	if !canRender {
-		// Try opentype as backup
-		if tryDrawWithOpenType(img, x, y, text, col, size) {
+	// Use pre-loaded opentype font (handles TTC/OTF/TTF)
+	if otFontData != nil {
+		if drawWithOTFontData(img, x, y, text, col, size) {
 			return
 		}
-		drawSimpleText(img, x, y, text, col, size)
+	}
+	// Fallback: tryDrawWithOpenType (searches all font paths)
+	if tryDrawWithOpenType(img, x, y, text, col, size) {
 		return
 	}
+	drawSimpleText(img, x, y, text, col, size)
+}
 
-	// Debug: check actual glyph rendering
-	debugLog("[Font Debug] Drawing '%s' at (%d,%d) size=%.0f, font=%v", text, x, y, size, fontRegular != nil)
-
-	// Draw using built-in bitmap glyphs (no font library dependency)
-	drawBitmapText(img, x, y, text, col, size)
+func drawWithOTFontData(img *image.RGBA, x, y int, text string, col color.RGBA, size float64) bool {
+	if otFontData == nil { return false }
+	var sf *sfnt.Font
+	var err error
+	if coll, e := sfnt.ParseCollection(otFontData); e == nil {
+		sf, err = coll.Font(0)
+	} else {
+		sf, err = sfnt.Parse(otFontData)
+	}
+	if err != nil || sf == nil { return false }
+	face, err := opentype.NewFace(sf, &opentype.FaceOptions{Size: size, DPI: 72, Hinting: font.HintingFull})
+	if err != nil { return false }
+	defer face.Close()
+	metrics := face.Metrics()
+	ascent := metrics.Ascent.Ceil()
+	if ascent == 0 { ascent = int(size * 0.8) }
+	d := &font.Drawer{
+		Dst: img, Src: image.NewUniform(col), Face: face,
+		Dot: fixed.P(x, y+ascent),
+	}
+	d.DrawString(text)
+	return true
 }
 
 // tryDrawWithOpenType attempts to draw text using opentype package
 func tryDrawWithOpenType(img *image.RGBA, x, y int, text string, col color.RGBA, size float64) bool {
-	// We need to reload the font with opentype
-	// This is inefficient but works for testing
 	candidates := platformLoadFontPaths()
-
-	// First try Japanese fonts
 	for _, p := range candidates {
-		// Check if this is likely a Japanese font
 		isJapaneseFont := strings.Contains(strings.ToLower(p), "ipa") ||
 			strings.Contains(strings.ToLower(p), "noto") ||
 			strings.Contains(strings.ToLower(p), "japanese") ||
 			strings.Contains(strings.ToLower(p), "cjk") ||
 			strings.Contains(strings.ToLower(p), "jp")
-
-		if (strings.HasSuffix(strings.ToLower(p), ".ttf") || strings.HasSuffix(strings.ToLower(p), ".otf")) && isJapaneseFont {
+		ext := strings.ToLower(filepath.Ext(p))
+		if (ext == ".ttf" || ext == ".otf" || ext == ".ttc") && isJapaneseFont {
 			if data, err := os.ReadFile(p); err == nil {
-				if f, err := opentype.Parse(data); err == nil {
-					face, err := opentype.NewFace(f, &opentype.FaceOptions{
-						Size:    size,
-						DPI:     72,
-						Hinting: font.HintingFull,
-					})
-					if err != nil {
-						continue
+				var sf *sfnt.Font
+				if ext == ".ttc" {
+					if coll, e := sfnt.ParseCollection(data); e == nil {
+						sf, err = coll.Font(0)
 					}
-					defer face.Close()
+				} else {
+					sf, err = sfnt.Parse(data)
+				}
+				if err != nil || sf == nil { continue }
+				face, err := opentype.NewFace(sf, &opentype.FaceOptions{
+					Size: size, DPI: 72, Hinting: font.HintingFull,
+				})
+				if err != nil { continue }
+				defer face.Close()
 
-					// Test if this font can render Japanese
-					canRender := true
-					if len(text) > 0 {
-						r := []rune(text)[0]
-						advance, ok := face.GlyphAdvance(r)
-						if !ok || advance == 0 {
-							canRender = false
-						}
+				canRender := true
+				if len(text) > 0 {
+					r := []rune(text)[0]
+					advance, ok := face.GlyphAdvance(r)
+					if !ok || advance == 0 { canRender = false }
+				}
+				if canRender {
+					metrics := face.Metrics()
+					ascent := metrics.Ascent.Ceil()
+					if ascent == 0 { ascent = int(size * 0.8) }
+					d := &font.Drawer{
+						Dst: img, Src: image.NewUniform(col), Face: face,
+						Dot: fixed.P(x, y+ascent),
 					}
-
-					if canRender {
-						metrics := face.Metrics()
-						ascent := metrics.Ascent.Ceil()
-						if ascent == 0 {
-							ascent = int(size * 0.8)
-						}
-
-						d := &font.Drawer{
-							Dst:  img,
-							Src:  image.NewUniform(col),
-							Face: face,
-							Dot:  fixed.P(x, y+ascent),
-						}
-
-						d.DrawString(text)
-						debugLog("[Font Debug] Drew Japanese text with opentype from: %s", filepath.Base(p))
-						return true
-					}
+					d.DrawString(text)
+					debugLog("[Font Debug] Drew with opentype: %s", filepath.Base(p))
+					return true
 				}
 			}
 		}
