@@ -85,7 +85,23 @@ func platformReboot() {
 	log.Println("[SYSTEM] 警告: 再起動コマンドが実行できませんでした")
 }
 
+var g_forcedFontPath string
+
+func platformSetFontPath(path string) {
+	g_forcedFontPath = path
+}
+
 func platformLoadFontPaths() []string {
+	if g_forcedFontPath != "" {
+		return []string{g_forcedFontPath,
+			"/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+			"/usr/share/fonts/noto-cjk/NotoSansCJK-Bold.ttc",
+			"/usr/share/fonts/liberation/LiberationSerif-Regular.ttf",
+			"/usr/share/fonts/liberation/LiberationSans-Regular.ttf",
+			"/usr/share/fonts/TTF/DejaVuSans.ttf",
+			"/usr/share/fonts/Adwaita/AdwaitaSans-Regular.ttf",
+		}
+	}
 	return []string{
 		// Noto CJK Bold (more readable on small buttons)
 		"/usr/share/fonts/noto-cjk/NotoSansCJK-Bold.ttc",

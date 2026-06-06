@@ -63,6 +63,14 @@ var (
 
 var EMOTES = []string{"BloodTrail", "HeyGuys", "LUL", "DinoDance", "HungryPaimon", "GlitchCat"}
 var FONT_NAMES = []string{"Noto Sans Bold", "Noto Sans Regular", "DejaVu Sans", "Liberation Sans", "Liberation Serif"}
+var FONT_PATHS = map[string]string{
+	"Noto Sans Bold":    "/usr/share/fonts/noto-cjk/NotoSansCJK-Bold.ttc",
+	"Noto Sans Regular": "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+	"DejaVu Sans":       "/usr/share/fonts/TTF/DejaVuSans.ttf",
+	"Liberation Sans":   "/usr/share/fonts/liberation/LiberationSans-Regular.ttf",
+	"Liberation Serif":  "/usr/share/fonts/liberation/LiberationSerif-Regular.ttf",
+}
+var selectedFont string = "Noto Sans Bold"
 var DEFAULT_TEXTS = []string{"うおw", "うま", "うっま", "あ", "www", "wwww", "wwwww", "wwwww", "こっから勝・つ・ぞ！オイ！💃", "んん〜まかｧｧウｯｯ!!!!🤏😎", "うおおおおおおおおお", "きたあああああああ", "いいね"}
 var DEFAULT_NEXT = []string{"あ）"}
 
@@ -557,8 +565,15 @@ func onKey(k int, p bool) {
 		}
 	case FN:
 		if k < len(FONT_NAMES) {
-			// Font selection - cycle font path list
-			infoLog("Font selected: %s", FONT_NAMES[k])
+			name := FONT_NAMES[k]
+			infoLog("Font selected: %s", name)
+			selectedFont = name
+			if path, ok := FONT_PATHS[name]; ok {
+				// Reload with selected font
+				platformSetFontPath(path)
+				loadFonts()
+				show(HOME, "", false)
+			}
 		}
 		if k == 13 {
 			show(HOME, "", false)
