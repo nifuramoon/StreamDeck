@@ -289,10 +289,6 @@ func init() {
 }
 
 func main() {
-	// Initialize global variables with proper priority:
-	// 1. Environment variables
-	// 2. Config file
-	// 3. Default values
 	CID = getEnvWithDefault("TWITCH_CLIENT_ID", "")
 	CS = getEnvWithDefault("TWITCH_CLIENT_SECRET", "")
 	SCOPE = getEnvWithDefault("TWITCH_SCOPE", "user:read:email user:read:follows user:read:broadcast user:write:chat chat:read")
