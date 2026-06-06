@@ -179,4 +179,89 @@ func drawWithOTFontData(img *image.RGBA, x, y int, text string, col color.RGBA, 
 	return true
 }
 
+func tryDrawWithOpenType(img *image.RGBA, x, y int, text string, col color.RGBA, size float64) bool {
+	candidates := platformLoadFontPaths()
+	for _, p := range candidates {
+		isJapaneseFont := strings.Contains(strings.ToLower(p), "ipa") ||
+			strings.Contains(strings.ToLower(p), "noto") ||
+			strings.Contains(strings.ToLower(p), "japanese") ||
+			strings.Contains(strings.ToLower(p), "cjk") ||
+			strings.Contains(strings.ToLower(p), "jp")
+		ext := strings.ToLower(filepath.Ext(p))
+		if (ext == ".ttf" || ext == ".otf" || ext == ".ttc") && isJapaneseFont {
+			if data, err := os.ReadFile(p); err == nil {
+				var sf *sfnt.Font
+				if ext == ".ttc" {
+					if coll, e := sfnt.ParseCollection(data); e == nil {
+						sf, err = coll.Font(0)
+					}
+				} else {
+					sf, err = sfnt.Parse(data)
+				}
+				if err != nil || sf == nil { continue }
+				face, err := opentype.NewFace(sf, &opentype.FaceOptions{
+					Size: size, DPI: 72, Hinting: font.HintingFull,
+				})
+				if err != nil { continue }
+				defer face.Close()
+
+				canRender := true
+				if len(text) > 0 {
+					r := []rune(text)[0]
+					advance, ok := face.GlyphAdvance(r)
+					if !ok || advance == 0 { canRender = false }
+				}
+				if canRender {
+					metrics := face.Metrics()
+					ascent := metrics.Ascent.Ceil()
+					if ascent == 0 { ascent = int(size * 0.8) }
+					d := &font.Drawer{
+						Dst: img, Src: image.NewUniform(col), Face: face,
+						Dot: fixed.P(x, y+ascent),
+					}
+					d.DrawString(text)
+					debugLog("[Font Debug] Drew with opentype: %s", filepath.Base(p))
+					return true
+				}
+			}
+		}
+	}
+
+	// If no Japanese font worked, try any font
+	for _, p := range candidates {
+		if strings.HasSuffix(strings.ToLower(p), ".ttf") || strings.HasSuffix(strings.ToLower(p), ".otf") {
+			if data, err := os.ReadFile(p); err == nil {
+				if f, err := opentype.Parse(data); err == nil {
+					face, err := opentype.NewFace(f, &opentype.FaceOptions{
+						Size:    size,
+						DPI:     72,
+						Hinting: font.HintingFull,
+					})
+					if err != nil {
+						continue
+					}
+					defer face.Close()
+
+					metrics := face.Metrics()
+					ascent := metrics.Ascent.Ceil()
+					if ascent == 0 {
+						ascent = int(size * 0.8)
+					}
+
+					d := &font.Drawer{
+						Dst:  img,
+						Src:  image.NewUniform(col),
+						Face: face,
+						Dot:  fixed.P(x, y+ascent),
+					}
+
+					d.DrawString(text)
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
 // tryDrawWithOpenType attempts to draw text using opentype package

@@ -14,15 +14,11 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/golang/freetype/truetype"
-	"golang.org/x/image/font"
-	"golang.org/x/image/font/opentype"
 	"golang.org/x/image/font/sfnt"
-	"golang.org/x/image/math/fixed"
 )
 
 // --- Device Structure ---
@@ -140,7 +136,6 @@ type LRUCache struct {
 	max  int
 }
 
-func NewLRU(max int) *LRUCache { return &LRUCache{data: make(map[string]interface{}), max: max} }
 func (c *LRUCache) Get(key string) (interface{}, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -163,100 +158,6 @@ func (c *LRUCache) Set(key string, val interface{}) {
 // Simple Japanese character drawing functions
 // These draw simplified representations of common characters
 
-func drawJapaneseChar認(img *image.RGBA, x, y, w, h int, col color.RGBA) {
-	// Draw a simple representation of 認
-	drawRect(img, x, y, w, h, col)
-	// Add distinguishing features
-	innerCol := color.RGBA{col.R / 2, col.G / 2, col.B / 2, 255}
-	drawLine(img, x+w/4, y+h/4, x+w*3/4, y+h/4, innerCol)
-	drawLine(img, x+w/4, y+h/2, x+w*3/4, y+h/2, innerCol)
-}
-
-func drawJapaneseChar証(img *image.RGBA, x, y, w, h int, col color.RGBA) {
-	drawRect(img, x, y, w, h, col)
-	innerCol := color.RGBA{col.R / 2, col.G / 2, col.B / 2, 255}
-	drawLine(img, x+w/4, y+h/4, x+w/4, y+h*3/4, innerCol)
-	drawLine(img, x+w*3/4, y+h/4, x+w*3/4, y+h*3/4, innerCol)
-}
-
-func drawJapaneseChar取(img *image.RGBA, x, y, w, h int, col color.RGBA) {
-	drawRect(img, x, y, w, h, col)
-	innerCol := color.RGBA{col.R / 2, col.G / 2, col.B / 2, 255}
-	drawLine(img, x+w/4, y+h/4, x+w*3/4, y+h/4, innerCol)
-	drawLine(img, x+w/2, y+h/4, x+w/2, y+h*3/4, innerCol)
-}
-
-func drawJapaneseChar得(img *image.RGBA, x, y, w, h int, col color.RGBA) {
-	drawRect(img, x, y, w, h, col)
-	innerCol := color.RGBA{col.R / 2, col.G / 2, col.B / 2, 255}
-	// Draw a diagonal cross
-	drawLine(img, x+w/4, y+h/4, x+w*3/4, y+h*3/4, innerCol)
-	drawLine(img, x+w*3/4, y+h/4, x+w/4, y+h*3/4, innerCol)
-}
-
-func drawJapaneseChar保(img *image.RGBA, x, y, w, h int, col color.RGBA) {
-	drawRect(img, x, y, w, h, col)
-	innerCol := color.RGBA{col.R / 2, col.G / 2, col.B / 2, 255}
-	// Draw vertical line with horizontal bars
-	drawLine(img, x+w/2, y+h/4, x+w/2, y+h*3/4, innerCol)
-	drawLine(img, x+w/4, y+h/3, x+w*3/4, y+h/3, innerCol)
-	drawLine(img, x+w/4, y+h*2/3, x+w*3/4, y+h*2/3, innerCol)
-}
-
-func drawJapaneseChar存(img *image.RGBA, x, y, w, h int, col color.RGBA) {
-	drawRect(img, x, y, w, h, col)
-	innerCol := color.RGBA{col.R / 2, col.G / 2, col.B / 2, 255}
-	// Draw a triangle-like shape
-	drawLine(img, x+w/2, y+h/4, x+w/4, y+h*3/4, innerCol)
-	drawLine(img, x+w/2, y+h/4, x+w*3/4, y+h*3/4, innerCol)
-	drawLine(img, x+w/4, y+h*3/4, x+w*3/4, y+h*3/4, innerCol)
-}
-
-func drawJapaneseChar戻(img *image.RGBA, x, y, w, h int, col color.RGBA) {
-	drawRect(img, x, y, w, h, col)
-	innerCol := color.RGBA{col.R / 2, col.G / 2, col.B / 2, 255}
-	// Draw an arrow-like shape (return symbol)
-	drawLine(img, x+w/4, y+h/2, x+w*3/4, y+h/2, innerCol)
-	drawLine(img, x+w/4, y+h/2, x+w/2, y+h/4, innerCol)
-	drawLine(img, x+w/4, y+h/2, x+w/2, y+h*3/4, innerCol)
-}
-
-func drawJapaneseCharる(img *image.RGBA, x, y, w, h int, col color.RGBA) {
-	drawRect(img, x, y, w, h, col)
-	innerCol := color.RGBA{col.R / 2, col.G / 2, col.B / 2, 255}
-	// Draw a curved shape for hiragana る
-	drawLine(img, x+w/4, y+h/4, x+w*3/4, y+h/4, innerCol)
-	drawLine(img, x+w*3/4, y+h/4, x+w*3/4, y+h*3/4, innerCol)
-	drawLine(img, x+w/4, y+h*3/4, x+w*3/4, y+h*3/4, innerCol)
-}
-
-func drawJapaneseChar日(img *image.RGBA, x, y, w, h int, col color.RGBA) {
-	drawRect(img, x, y, w, h, col)
-	innerCol := color.RGBA{col.R / 2, col.G / 2, col.B / 2, 255}
-	// Draw a rectangle with a line in the middle (sun/day character)
-	drawRectOutline(img, x+w/4, y+h/4, w/2, h/2, innerCol)
-	drawLine(img, x+w/4, y+h/2, x+w*3/4, y+h/2, innerCol)
-}
-
-func drawJapaneseChar本(img *image.RGBA, x, y, w, h int, col color.RGBA) {
-	drawRect(img, x, y, w, h, col)
-	innerCol := color.RGBA{col.R / 2, col.G / 2, col.B / 2, 255}
-	// Draw a tree-like shape (book/main character)
-	drawLine(img, x+w/2, y+h/4, x+w/2, y+h*3/4, innerCol)
-	drawLine(img, x+w/4, y+h/2, x+w*3/4, y+h/2, innerCol)
-	drawLine(img, x+w/4, y+h*3/4, x+w*3/4, y+h*3/4, innerCol)
-}
-
-func drawJapaneseChar語(img *image.RGBA, x, y, w, h int, col color.RGBA) {
-	drawRect(img, x, y, w, h, col)
-	innerCol := color.RGBA{col.R / 2, col.G / 2, col.B / 2, 255}
-	// Draw a speech/language symbol
-	drawLine(img, x+w/4, y+h/4, x+w*3/4, y+h/4, innerCol)
-	drawLine(img, x+w/4, y+h/2, x+w*3/4, y+h/2, innerCol)
-	drawLine(img, x+w/4, y+h*3/4, x+w*3/4, y+h*3/4, innerCol)
-	drawLine(img, x+w/4, y+h/4, x+w/4, y+h*3/4, innerCol)
-}
-
 func (s *V2Device) ClearAllBtns() {
 	for i := 0; i < MAX_KEYS; i++ {
 		s.FillBlank(i)
@@ -272,17 +173,6 @@ func (s *V2Device) FillBlank(idx int) {
 	img := image.NewRGBA(image.Rect(0, 0, W, H))
 	draw.Draw(img, img.Bounds(), image.NewUniform(color.RGBA{0, 0, 0, 255}), image.Point{}, draw.Src)
 	s.FillImage(idx, img)
-}
-func flipV2(img image.Image) *image.RGBA {
-	b := img.Bounds()
-	res := image.NewRGBA(b)
-	w, h := b.Dx(), b.Dy()
-	for y := 0; y < h; y++ {
-		for x := 0; x < w; x++ {
-			res.Set(w-1-x, h-1-y, img.At(x, y))
-		}
-	}
-	return res
 }
 func (s *V2Device) FillImage(idx int, img image.Image) {
 	if s.virtualDir != "" {
@@ -563,90 +453,6 @@ func errorLog(format string, args ...interface{}) {
 }
 
 // --- Graphics ---
-func tryDrawWithOpenType(img *image.RGBA, x, y int, text string, col color.RGBA, size float64) bool {
-	candidates := platformLoadFontPaths()
-	for _, p := range candidates {
-		isJapaneseFont := strings.Contains(strings.ToLower(p), "ipa") ||
-			strings.Contains(strings.ToLower(p), "noto") ||
-			strings.Contains(strings.ToLower(p), "japanese") ||
-			strings.Contains(strings.ToLower(p), "cjk") ||
-			strings.Contains(strings.ToLower(p), "jp")
-		ext := strings.ToLower(filepath.Ext(p))
-		if (ext == ".ttf" || ext == ".otf" || ext == ".ttc") && isJapaneseFont {
-			if data, err := os.ReadFile(p); err == nil {
-				var sf *sfnt.Font
-				if ext == ".ttc" {
-					if coll, e := sfnt.ParseCollection(data); e == nil {
-						sf, err = coll.Font(0)
-					}
-				} else {
-					sf, err = sfnt.Parse(data)
-				}
-				if err != nil || sf == nil { continue }
-				face, err := opentype.NewFace(sf, &opentype.FaceOptions{
-					Size: size, DPI: 72, Hinting: font.HintingFull,
-				})
-				if err != nil { continue }
-				defer face.Close()
-
-				canRender := true
-				if len(text) > 0 {
-					r := []rune(text)[0]
-					advance, ok := face.GlyphAdvance(r)
-					if !ok || advance == 0 { canRender = false }
-				}
-				if canRender {
-					metrics := face.Metrics()
-					ascent := metrics.Ascent.Ceil()
-					if ascent == 0 { ascent = int(size * 0.8) }
-					d := &font.Drawer{
-						Dst: img, Src: image.NewUniform(col), Face: face,
-						Dot: fixed.P(x, y+ascent),
-					}
-					d.DrawString(text)
-					debugLog("[Font Debug] Drew with opentype: %s", filepath.Base(p))
-					return true
-				}
-			}
-		}
-	}
-
-	// If no Japanese font worked, try any font
-	for _, p := range candidates {
-		if strings.HasSuffix(strings.ToLower(p), ".ttf") || strings.HasSuffix(strings.ToLower(p), ".otf") {
-			if data, err := os.ReadFile(p); err == nil {
-				if f, err := opentype.Parse(data); err == nil {
-					face, err := opentype.NewFace(f, &opentype.FaceOptions{
-						Size:    size,
-						DPI:     72,
-						Hinting: font.HintingFull,
-					})
-					if err != nil {
-						continue
-					}
-					defer face.Close()
-
-					metrics := face.Metrics()
-					ascent := metrics.Ascent.Ceil()
-					if ascent == 0 {
-						ascent = int(size * 0.8)
-					}
-
-					d := &font.Drawer{
-						Dst:  img,
-						Src:  image.NewUniform(col),
-						Face: face,
-						Dot:  fixed.P(x, y+ascent),
-					}
-
-					d.DrawString(text)
-					return true
-				}
-			}
-		}
-	}
-	return false
-}
 
 // drawSimpleText draws text using simple rectangles when no font is available
 type bitmap struct { w, h int; data []uint8 }

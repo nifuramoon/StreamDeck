@@ -3,6 +3,7 @@
 package main
 
 import (
+	"image"
 	"bytes"
 	"fmt"
 	"io"
@@ -351,4 +352,16 @@ func voicevoxSpeak(text string) bool {
 
 	log.Printf("[TTS] 音声合成成功: %s (VoiceVox Engine)", text)
 	return true
+}
+
+func flipV2(img image.Image) *image.RGBA {
+	b := img.Bounds()
+	res := image.NewRGBA(b)
+	w, h := b.Dx(), b.Dy()
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			res.Set(w-1-x, h-1-y, img.At(x, y))
+		}
+	}
+	return res
 }
