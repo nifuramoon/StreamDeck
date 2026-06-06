@@ -476,8 +476,8 @@ func twImg(profURL, login string) *image.RGBA {
 	if v > 0 {
 		s := formatViewerCount(v)
 		tw := measureText(s, 11)
-		fillRect(img, image.Rect(0, 0, tw+6, 16), color.RGBA{0, 0, 0, 200}) // 左上詰め・半透明黒
-		drawText(img, 2, 1, s, color.RGBA{255, 255, 255, 255}, 11)
+		fillRect(img, image.Rect(0, 0, tw+6, 14), color.RGBA{0, 0, 0, 200})
+		drawText(img, 2, 0, s, color.RGBA{255, 255, 255, 255}, 10)
 	}
 	if st > 0 {
 		el := time.Now().Unix() - int64(st)
@@ -488,8 +488,8 @@ func twImg(profURL, login string) *image.RGBA {
 		}
 		tw := measureText(lab, 11)
 		xOffset := W - tw - 4
-		fillRect(img, image.Rect(xOffset, 0, W, 16), color.RGBA{0, 0, 0, 200})
-		drawText(img, xOffset+2, 1, lab, color.RGBA{255, 255, 255, 255}, 11)
+		fillRect(img, image.Rect(xOffset, 0, W, 14), color.RGBA{0, 0, 0, 200})
+		drawText(img, xOffset+2, 0, lab, color.RGBA{255, 255, 255, 255}, 10)
 	}
 	if txt != "" {
 		col := color.RGBA{255, 217, 0, 255}
