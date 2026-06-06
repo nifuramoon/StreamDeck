@@ -38,6 +38,7 @@ type V2Device struct {
 	mu         sync.Mutex
 	closed     bool
 	prevImages []string
+	virtualDir string // if set, save PNGs here instead of USB
 }
 
 // --- Constants & Config ---
@@ -129,7 +130,7 @@ var (
 	tokenManager *TokenManager
 
 	// Debug mode flag - set to true for verbose logging
-	debugMode = false
+	debugMode = true
 )
 
 type stackEntry struct{ page, ctx string }
@@ -287,11 +288,38 @@ func flipV2(img image.Image) *image.RGBA {
 	return res
 }
 func (s *V2Device) FillImage(idx int, img image.Image) {
+	if s.virtualDir != "" {
+		dst := image.NewRGBA(image.Rect(0, 0, 72, 72))
+		r, g, b, a := img.At(0, 0).RGBA()
+		log.Printf("[Virtual FillImage] btn%d img.At(0,0)=RGBA(%d,%d,%d,%d)", idx, r/257, g/257, b/257, a/257)
+		// Use the actual image color
+		for y := 0; y < 72; y++ {
+			for x := 0; x < 72; x++ {
+				rr, gg, bb, aa := img.At(x, y).RGBA()
+				off := dst.PixOffset(x, y)
+				dst.Pix[off+0] = uint8(rr / 257)
+				dst.Pix[off+1] = uint8(gg / 257)
+				dst.Pix[off+2] = uint8(bb / 257)
+				dst.Pix[off+3] = uint8(aa / 257)
+			}
+		}
+		// Also check after copy
+		r2, g2, b2, _ := dst.At(0, 0).RGBA()
+		log.Printf("[Virtual FillImage] btn%d dst.At(0,0)=RGBA(%d,%d,%d)", idx, r2/257, g2/257, b2/257)
+		fname := filepath.Join(s.virtualDir, fmt.Sprintf("btn%d.png", idx))
+		f, _ := os.Create(fname)
+		if f != nil {
+			png.Encode(f, dst)
+			f.Close()
+			log.Printf("[Virtual] Saved button %d to %s", idx, fname)
+		}
+		return
+	}
+
 	flipped := flipV2(img)
 	var buf bytes.Buffer
 	jpeg.Encode(&buf, flipped, &jpeg.Options{Quality: 90})
 	payload := buf.Bytes()
-
 	hash := fmt.Sprintf("%x", sha1.Sum(payload))
 	if s.prevImages[idx] == hash {
 		return
@@ -432,6 +460,29 @@ func main() {
 	}
 
 	loadFonts()
+
+	// Virtual mode: render button images to PNG files for testing without device
+	if len(os.Args) > 1 && os.Args[1] == "--virtual" {
+		infoLog("仮想モード起動（デバイスなし）")
+		outDir := "/home/nifuramu/Desktop/streamdeck_test"
+		os.RemoveAll(outDir)
+		os.MkdirAll(outDir, 0755)
+		sdeck = &V2Device{
+			virtualDir: outDir,
+			prevImages: make([]string, MAX_KEYS),
+		}
+		page := HOME
+		if len(os.Args) > 2 {
+			switch os.Args[2] {
+			case "tw": page = TW
+			case "home": page = HOME
+			}
+		}
+		show(page, "", false)
+		infoLog("ページ %s のテスト画像を %s に出力しました", page, outDir)
+		return
+	}
+
 	var err error
 	if sdeck, err = openStreamDeck(); err != nil {
 		log.Fatalf("[ERROR] Stream Deck: %v", err)
@@ -813,30 +864,22 @@ func drawText(img *image.RGBA, x, y int, text string, col color.RGBA, size float
 		return
 	}
 
-	// デバッグ: 描画するテキストをログに出力
-	if debugMode && (strings.ContainsAny(text, "AuthGetSaveBack") || containsJapanese) {
-		debugLog("[Font Debug] Drawing text: '%s' (Japanese: %v)", text, containsJapanese)
-	}
+	// Debug: check actual glyph rendering
+	debugLog("[Font Debug] Drawing '%s' at (%d,%d) size=%.0f", text, x, y, size)
 
-	// Create a drawer
-	metrics := face.Metrics()
-	ascent := metrics.Ascent.Ceil()
-	if ascent == 0 {
-		ascent = int(size * 0.8)
-	}
-
+	// Create a drawer with larger font for visibility
 	d := &font.Drawer{
 		Dst:  img,
 		Src:  image.NewUniform(col),
-		Face: face,
-		Dot:  fixed.P(x, y+ascent),
+		Face: truetype.NewFace(fontRegular, &truetype.Options{Size: size, DPI: 72, Hinting: font.HintingFull}),
+		Dot:  fixed.P(x, y+int(size*0.8)),
 	}
 
 	d.DrawString(text)
 
 	if debugMode && (strings.ContainsAny(text, "AuthGetSaveBack") || containsJapanese) {
 		bounds, _ := d.BoundString(text)
-		debugLog("[Font Debug] Text bounds: %v (ascent: %d)", bounds, ascent)
+		debugLog("[Font Debug] Text bounds: %v", bounds)
 	}
 }
 
