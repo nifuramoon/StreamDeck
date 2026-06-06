@@ -86,52 +86,16 @@ func platformReboot() {
 
 func platformLoadFontPaths() []string {
 	return []string{
-		// Japanese fonts FIRST (priority for Japanese text)
-		"/usr/share/fonts/OTF/ipag.ttf",  // IPA Gothic (installed)
-		"/usr/share/fonts/OTF/ipagp.ttf", // IPA Gothic P
-		"/usr/share/fonts/OTF/ipam.ttf",  // IPA Mincho
-		"/usr/share/fonts/OTF/ipamp.ttf", // IPA Mincho P
-
-		// Noto CJK fonts (excellent Japanese support)
-		"/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
-		"/usr/share/fonts/noto-cjk/NotoSansCJK-Bold.ttc",
-		"/usr/share/fonts/noto-cjk/NotoSansCJP-Regular.ttc", // Japanese-specific
-		"/usr/share/fonts/noto-cjk/NotoSansCJP-Bold.ttc",    // Japanese-specific
-
-		// Other Japanese fonts
-		"/usr/share/fonts/truetype/fonts-japanese-gothic.ttf",
-		"/usr/share/fonts/truetype/fonts-japanese-mincho.ttf",
-		"/usr/share/fonts/TTF/ume-ui-gothic.ttf",    // UME UI Gothic
-		"/usr/share/fonts/TTF/ume-gothic.ttf",       // UME Gothic
-		"/usr/share/fonts/TTF/ume-mincho.ttf",       // UME Mincho
-		"/usr/share/fonts/truetype/mona/mona.ttf",   // Mona font
-		"/usr/share/fonts/truetype/mona/monab.ttf",  // Mona bold
-		"/usr/share/fonts/truetype/mona/monapo.ttf", // Mona proportional
-
-		// Alternative locations for Japanese fonts
-		"/usr/share/fonts/opentype/ipafont/ipag.ttf",
-		"/usr/share/fonts/truetype/ipafont/ipag.ttf",
-		"/usr/share/fonts/opentype/ipafont/ipam.ttf",
-		"/usr/share/fonts/truetype/ipafont/ipam.ttf",
-
-		// Other CJK fonts
-		"/usr/share/fonts/noto/NotoSansCJK-Regular.ttc",
-		"/usr/share/fonts/noto/NotoSansCJK-Bold.ttc",
-		"/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-		"/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
-		"/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
-		"/usr/share/fonts/truetype/noto/NotoSansCJK-Bold.ttc",
-		"/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc",
-		"/usr/share/fonts/google-noto-cjk/NotoSansCJK-Bold.ttc",
-
-		// English/Latin fonts as fallback
+		// Liberation Serif (may render better)
+		"/usr/share/fonts/liberation/LiberationSerif-Regular.ttf",
+		"/usr/share/fonts/liberation/LiberationSerif-Bold.ttf",
+		// Liberation Sans (fallback)
 		"/usr/share/fonts/liberation/LiberationSans-Regular.ttf",
 		"/usr/share/fonts/liberation/LiberationSans-Bold.ttf",
+
+		// DejaVu Sans
 		"/usr/share/fonts/TTF/DejaVuSans.ttf",
 		"/usr/share/fonts/TTF/DejaVuSans-Bold.ttf",
-		"/usr/share/fonts/TTF/FreeSans.ttf",
-		"/usr/share/fonts/Adwaita/AdwaitaSans-Regular.ttf",
-		"/usr/share/fonts/Adwaita/AdwaitaSans-Bold.ttf",
 	}
 }
 
