@@ -296,23 +296,18 @@ func fetchStreams() {
 	stateMu.Unlock()
 
 	// 配信開始通知のチェック
-	if notificationEnabled {
-		prevOnlineMu.Lock()
-		for lg := range currentOnlineMap {
-			if !prevOnline[lg] {
-				// 新しく配信を開始した
-				prevOnlineMu.Unlock() // 通知中はロックを解放
-				notifyStreamStart(lg)
-				prevOnlineMu.Lock() // 再ロック
-			}
+	prevOnlineMu.Lock()
+	for lg := range currentOnlineMap {
+		if !prevOnline[lg] {
+			prevOnlineMu.Unlock()
+			notifyStreamStart(lg)
+			prevOnlineMu.Lock()
 		}
-		// 前回の状態を更新
-		prevOnline = currentOnlineMap
-		prevOnlineMu.Unlock()
-
-		// 状態をファイルに保存
-		go savePrevOnlineState()
 	}
+	prevOnline = currentOnlineMap
+	prevOnlineMu.Unlock()
+
+	go savePrevOnlineState()
 
 	currentOnline := len(online)
 	if currentOnline != lastOnlineCount {
@@ -1109,14 +1104,8 @@ func notifyStreamStart(login string) {
 
 // speakText uses platform-specific TTS to speak text
 func speakText(text string) {
-	// 通知が無効の場合は何もしない
-	if !notificationEnabled {
-		return
-	}
-
 	log.Printf("[TTS] 音声合成: %s", text)
 
-	// 非同期で音声合成を実行（メインスレッドをブロックしない）
 	go func() {
 		platformSpeakText(text)
 	}()

@@ -112,9 +112,8 @@ var (
 	catWrapped      = map[string]bool{}
 
 	// Stream notification tracking
-	prevOnline          map[string]bool // 前回のオンライン状態
-	prevOnlineMu        sync.RWMutex    // prevOnline用のロック
-	notificationEnabled bool            // 通知機能の有効/無効
+	prevOnline          map[string]bool
+	prevOnlineMu        sync.RWMutex
 
 	// Log analyzer for automatic error detection and fixes
 	logAnalyzer *LogAnalyzer
@@ -420,7 +419,6 @@ func main() {
 
 	// 通知機能の初期化
 	prevOnline = loadPrevOnlineState()
-	notificationEnabled = loadNotificationSetting()
 
 	go bgLoop()
 	go ircLoop()
@@ -527,29 +525,6 @@ func onKey(k int, p bool) {
 			show(SD, "", true)
 		} else if k == 1 {
 			platformReboot()
-		} else if k == 2 {
-			// 通知設定の切り替え
-			notificationEnabled = !notificationEnabled
-			if notificationEnabled {
-				log.Println("[設定] 配信開始通知を有効にしました")
-				// 現在オンラインの配信者をprevOnlineに登録し、既存配信の通知を防止
-				prevOnlineMu.Lock()
-				for _, lg := range twOrder {
-					prevOnline[lg] = true
-				}
-				prevOnlineMu.Unlock()
-				go speakText("通知をオンにしました")
-			} else {
-				log.Println("[設定] 配信開始通知を無効にしました")
-				go speakText("通知をオフにしました")
-			}
-			// 設定をファイルに保存
-			saveNotificationSetting(notificationEnabled)
-			// 設定画面を再描画（即時更新）
-			renderST()
-		} else if k == 3 {
-			log.Println("[設定] テスト音声を再生します")
-			go platformSpeakText("テスト音声です")
 		}
 		if k == 14 {
 			show(HOME, "", false)

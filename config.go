@@ -87,11 +87,6 @@ func loadConfig() bool {
 	log.Printf("[Config Debug] After update: CID='%s', CS='%s', SCOPE='%s'",
 		maskString(CID), maskString(CS), SCOPE)
 
-	// Load notification setting
-	if config.NotificationsEnabled {
-		notificationEnabled = true
-	}
-
 	// Try to load tokens
 	tokensPath := filepath.Join(configDir, "tokens.json")
 	if tokenData, err := os.ReadFile(tokensPath); err == nil {

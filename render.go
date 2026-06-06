@@ -581,20 +581,7 @@ func renderST() {
 	}
 	sdeck.FillImage(0, keyTextBg("StreamDeck", color.RGBA{30, 30, 30, 255}))
 	sdeck.FillImage(1, keyTextBg("再起動", color.RGBA{60, 0, 0, 255}))
-
-	// 通知設定ボタン
-	notificationText := "通知OFF"
-	notificationColor := color.RGBA{100, 0, 0, 255} // 赤色（OFF時）
-	if notificationEnabled {
-		notificationText = "通知ON"
-		notificationColor = color.RGBA{0, 100, 0, 255} // 緑色（ON時）
-	}
-	sdeck.FillImage(2, keyTextBg(notificationText, notificationColor))
-
-	// テスト音声ボタン
-	sdeck.FillImage(3, keyTextBg("テスト音声", color.RGBA{0, 0, 100, 255}))
-
-	// ボタン4-13は空白
+	// ボタン2-13は空白
 	sdeck.FillImage(14, keyTextBg("ホーム", color.RGBA{0, 40, 40, 255}))
 	deckMu.Unlock()
 }
