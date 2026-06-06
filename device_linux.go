@@ -87,8 +87,7 @@ func platformReboot() {
 
 func platformLoadFontPaths() []string {
 	return []string{
-		// Noto CJK (Japanese, highest priority)
-		"/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+		// Noto CJK Bold (more readable on small buttons)
 		"/usr/share/fonts/noto-cjk/NotoSansCJK-Bold.ttc",
 
 		// Liberation Serif/Sans (fallback)
