@@ -476,8 +476,8 @@ func twImg(profURL, login string) *image.RGBA {
 	if v > 0 {
 		s := formatViewerCount(v)
 		tw := measureText(s, 11)
-		fillRect(img, image.Rect(4, 3, tw+10, 18), color.RGBA{20, 20, 30, 240}) // 濃い背景
-		drawText(img, 7, 4, s, color.RGBA{255, 255, 255, 255}, 11)
+		fillRect(img, image.Rect(0, 0, tw+6, 16), color.RGBA{0, 0, 0, 200}) // 左上詰め・半透明黒
+		drawText(img, 2, 1, s, color.RGBA{255, 255, 255, 255}, 11)
 	}
 	if st > 0 {
 		el := time.Now().Unix() - int64(st)
