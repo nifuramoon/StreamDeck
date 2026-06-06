@@ -47,7 +47,7 @@ const (
 )
 
 const (
-	HOME, TW, LV, TX, NX, ST, SD, OA, FN = "home", "tw", "lv", "tx", "nx", "st", "sd", "oa", "fn"
+	HOME, TW, LV, TX, NX, ST, SD, OA, FN, UI = "home", "tw", "lv", "tx", "nx", "st", "sd", "oa", "fn", "ui"
 )
 
 var (
@@ -528,6 +528,8 @@ func onKey(k int, p bool) {
 			platformReboot()
 		} else if k == 2 {
 			show(FN, "", true)
+		} else if k == 3 {
+			show(UI, "", true)
 		}
 		if k == 14 {
 			show(HOME, "", false)
@@ -557,6 +559,19 @@ func onKey(k int, p bool) {
 		if k < len(FONT_NAMES) {
 			// Font selection - cycle font path list
 			infoLog("Font selected: %s", FONT_NAMES[k])
+		}
+		if k == 13 {
+			show(HOME, "", false)
+		} else if k == 14 {
+			back()
+		}
+	case UI:
+		if k == 0 {
+			infoLog("下部背景高さ調整")
+		} else if k == 1 {
+			infoLog("視聴数背景余白調整")
+		} else if k == 2 {
+			infoLog("配信時間背景余白調整")
 		}
 		if k == 13 {
 			show(HOME, "", false)
