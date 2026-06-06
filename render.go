@@ -659,5 +659,3 @@ func renderOA() {
 	sdeck.FillImage(14, keyTextBg("Back", color.RGBA{40, 40, 0, 255}))
 	deckMu.Unlock()
 }
-
-func NewLRU(max int) *LRUCache { return &LRUCache{data: make(map[string]interface{}), max: max} }

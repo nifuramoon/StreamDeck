@@ -136,6 +136,8 @@ type LRUCache struct {
 	max  int
 }
 
+func NewLRU(max int) *LRUCache { return &LRUCache{data: make(map[string]interface{}), max: max} }
+
 func (c *LRUCache) Get(key string) (interface{}, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
