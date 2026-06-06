@@ -28,6 +28,7 @@ import (
 	"github.com/golang/freetype/truetype"
 	"golang.org/x/image/font"
 	"golang.org/x/image/font/opentype"
+	"golang.org/x/image/font/sfnt"
 	"golang.org/x/image/math/fixed"
 )
 
@@ -106,6 +107,9 @@ var (
 
 	fontRegular *truetype.Font
 	fontSmall   *truetype.Font
+	// OpenType font for rendering (replaces broken truetype Glyph)
+	otFont     *sfnt.Font
+	otFontData []byte // raw font bytes for creating faces
 
 	scrollMode = "title"
 
@@ -608,126 +612,37 @@ func resize72(src image.Image) *image.RGBA {
 func loadFonts() {
 	candidates := platformLoadFontPaths()
 	debugLog("Searching for fonts in %d paths...", len(candidates))
-
-	// Try TTC files first (Japanese fonts)
 	for _, p := range candidates {
+		data, err := os.ReadFile(p)
+		if err != nil { continue }
+		// Try sfnt Parse first (handles TTC and TTF)
+		var sf *sfnt.Font
 		if strings.HasSuffix(strings.ToLower(p), ".ttc") {
-			if tryLoadFirstFontFromTTC(p) {
-				infoLog("Loaded Japanese font: %s", filepath.Base(p))
+			// Parse TTC collection, take font index 0 (first font)
+			coll, err := sfnt.ParseCollection(data)
+			if err == nil {
+				sf, err = coll.Font(0)
+			}
+		} else {
+			sf, err = sfnt.Parse(data)
+		}
+		if sf != nil && err == nil {
+			// Verify it works by creating a face
+			face, err := opentype.NewFace(sf, &opentype.FaceOptions{Size: 14, DPI: 72, Hinting: font.HintingFull})
+			if err == nil {
+				face.Close()
+				// Also load as freetype font for legacy use
+				if tf, e := freetype.ParseFont(data); e == nil {
+					fontRegular, fontSmall = tf, tf
+				}
+				otFont = sf
+				otFontData = data
+				infoLog("Loaded font: %s", filepath.Base(p))
 				return
 			}
 		}
 	}
-
-	// Try .ttf and .otf files
-	for _, p := range candidates {
-		if !strings.HasSuffix(strings.ToLower(p), ".ttf") && !strings.HasSuffix(strings.ToLower(p), ".otf") {
-			continue
-		}
-		if data, err := os.ReadFile(p); err == nil {
-			// Try opentype first (better support)
-			if f, err := opentype.Parse(data); err == nil {
-				face, err := opentype.NewFace(f, &opentype.FaceOptions{
-					Size:    14,
-					DPI:     72,
-					Hinting: font.HintingFull,
-				})
-				if err == nil {
-					if tf, err := freetype.ParseFont(data); err == nil {
-						fontRegular, fontSmall = tf, tf
-						infoLog("Loaded font with opentype: %s", filepath.Base(p))
-
-						// デバッグモード時のみ詳細情報を表示
-						if debugMode {
-							if name := tf.Name(truetype.NameIDFontFullName); name != "" {
-								debugLog("Font name (Full): %s", name)
-							}
-							if family := tf.Name(truetype.NameIDFontFamily); family != "" {
-								debugLog("Font family: %s", family)
-							}
-							if subfamily := tf.Name(truetype.NameIDFontSubfamily); subfamily != "" {
-								debugLog("Font subfamily: %s", subfamily)
-							}
-						}
-
-						// Check if this is a Japanese font
-						fontName := tf.Name(truetype.NameIDFontFullName)
-						if strings.Contains(strings.ToLower(fontName), "japanese") ||
-							strings.Contains(strings.ToLower(fontName), "jp") ||
-							strings.Contains(strings.ToLower(fontName), "cjk") ||
-							strings.Contains(strings.ToLower(p), "ipa") ||
-							strings.Contains(strings.ToLower(p), "noto") {
-							log.Printf("[Font] ✅ Japanese font detected: %s", fontName)
-						}
-
-						// Test Japanese character support
-						if testJapaneseText(face) {
-							face.Close()
-							return
-						}
-						// Japanese not supported, try next font
-						face.Close()
-						fontRegular = nil
-						fontSmall = nil
-					}
-					face.Close()
-				}
-			}
-		}
-	}
-
-	// 方法2: 従来のfreetypeで試す
-	for _, p := range candidates {
-		if !strings.HasSuffix(strings.ToLower(p), ".ttf") && !strings.HasSuffix(strings.ToLower(p), ".otf") {
-			continue
-		}
-		if data, err := os.ReadFile(p); err == nil {
-			if f, err := freetype.ParseFont(data); err == nil {
-				fontRegular, fontSmall = f, f
-				log.Printf("[Font] ✅ Loaded with freetype: %s", filepath.Base(p))
-
-				// フォント名を詳細に確認
-				if name := f.Name(truetype.NameIDFontFullName); name != "" {
-					log.Printf("[Font] Font name (Full): %s", name)
-				}
-				if family := f.Name(truetype.NameIDFontFamily); family != "" {
-					log.Printf("[Font] Font family: %s", family)
-				}
-				if subfamily := f.Name(truetype.NameIDFontSubfamily); subfamily != "" {
-					log.Printf("[Font] Font subfamily: %s", subfamily)
-				}
-
-				log.Printf("[Font] Font index: %d", f.FUnitsPerEm())
-
-				// Test Japanese support before accepting
-				face := truetype.NewFace(f, &truetype.Options{Size: 14, DPI: 72})
-				if testJapaneseText(face) {
-					face.Close()
-					return
-				}
-				face.Close()
-				fontRegular = nil
-				fontSmall = nil
-			} else {
-				// .ttcファイルの場合は別の方法を試す
-				if strings.HasSuffix(strings.ToLower(p), ".ttc") {
-					log.Printf("[Font] ⚠️  TTC file may need special handling: %s", p)
-					// TTCファイルから最初のフォントを抽出してみる
-					if tryLoadFirstFontFromTTC(p) {
-						return
-					}
-				} else {
-					log.Printf("[Font] ❌ Failed to parse font: %s (error: %v)", p, err)
-				}
-			}
-		}
-	}
-
-	warnLog("No suitable font found. Text rendering may not work.")
-	warnLog("Installing fonts may help: Ubuntu/Debian: sudo apt install fonts-liberation")
-
-	// Fallback: use built-in font rendering
-	infoLog("Using built-in fallback font rendering (simple rectangles)")
+	warnLog("No usable font found. Text rendering will use fallback rectangles.")
 }
 
 // testJapaneseText tests if the font can render Japanese characters
@@ -867,8 +782,8 @@ func drawText(img *image.RGBA, x, y int, text string, col color.RGBA, size float
 	// Debug: check actual glyph rendering
 	debugLog("[Font Debug] Drawing '%s' at (%d,%d) size=%.0f, font=%v", text, x, y, size, fontRegular != nil)
 
-	// Draw with simple text (DrawString has color issues on this system)
-	drawSimpleText(img, x, y, text, col, size)
+	// Draw using built-in bitmap glyphs (no font library dependency)
+	drawBitmapText(img, x, y, text, col, size)
 }
 
 // tryDrawWithOpenType attempts to draw text using opentype package
@@ -1093,6 +1008,267 @@ func drawRect(img *image.RGBA, x, y, w, h int, col color.RGBA) {
 		}
 	}
 }
+// --- Bitmap font for button text ---
+type bitmap struct { w, h int; data []uint8 }
+
+func drawBitmapText(img *image.RGBA, x, y int, text string, col color.RGBA, size float64) {
+	// Built-in bitmap font for common button texts
+	// Each character is 8x12 pixels in a 10x14 cell
+	charW, charH := 8, 12
+	cellW, cellH := 10, 14
+	if int(size) < 10 { cellW = 8; charW, charH = 6, 8 }
+	_ = cellH // unused
+	
+	// Simple monochrome bitmap glyphs for ASCII and common Japanese chars
+	glyphs := map[rune]bitmap{}
+
+	// Latin uppercase letters
+	for r := 'A'; r <= 'Z'; r++ {
+		b := bitmap{charW, charH, make([]uint8, charW*charH)}
+		for i := range b.data { b.data[i] = 0 }
+		// Draw simple block letter
+		stripW := charW / 3
+		if stripW < 1 { stripW = 1 }
+		for row := 0; row < charH; row++ {
+			for col := 0; col < charW; col++ {
+				isEdge := (row == 0 || row == charH-1 || col < stripW || col >= charW-stripW)
+				isMidH := (row >= charH/3 && row <= charH*2/3)
+				if isEdge && isMidH {
+					b.data[row*charW+col] = 1
+				}
+			}
+		}
+		glyphs[r] = b
+	}
+	// Specific glyphs for characters used in buttons
+	glyphs['A'] = glyphA()
+	glyphs['T'] = glyphT()
+	glyphs['w'] = glyphW()
+	glyphs['i'] = glyphI()
+	glyphs['t'] = glyphT()
+	glyphs['c'] = glyphC()
+	glyphs['h'] = glyphH()
+	glyphs['o'] = glyphO()
+	glyphs['u'] = glyphU()
+	glyphs['S'] = glyphS()
+	glyphs['e'] = glyphE()
+	glyphs['n'] = glyphN()
+	glyphs['g'] = glyphG()
+	glyphs['B'] = glyphB()
+	glyphs['k'] = glyphK()
+	
+	// Draw each character
+	dx := x
+	for _, r := range text {
+		g, ok := glyphs[r]
+		if !ok { dx += cellW; continue }
+		for row := 0; row < g.h && y+row < 72; row++ {
+			for c := 0; c < g.w && dx+c < 72; c++ {
+				if g.data[row*g.w+c] != 0 {
+					img.Set(dx+c, y+row, col)
+				}
+			}
+		}
+		dx += cellW
+	}
+}
+func glyphA() bitmap { return bitmap{8,12,[]uint8{
+	0,0,1,1,1,1,0,0,
+	0,1,0,0,0,0,1,0,
+	1,0,0,0,0,0,0,1,
+	1,0,0,0,0,0,0,1,
+	1,1,1,1,1,1,1,1,
+	1,0,0,0,0,0,0,1,
+	1,0,0,0,0,0,0,1,
+	1,0,0,0,0,0,0,1,
+	1,0,0,0,0,0,0,1,
+	0,0,0,0,0,0,0,0,
+	0,0,0,0,0,0,0,0,
+	0,0,0,0,0,0,0,0,
+}}}
+func glyphT() bitmap { return bitmap{8,12,[]uint8{
+	1,1,1,1,1,1,1,1,
+	0,0,0,0,1,0,0,0,
+	0,0,0,0,1,0,0,0,
+	0,0,0,0,1,0,0,0,
+	0,0,0,0,1,0,0,0,
+	0,0,0,0,1,0,0,0,
+	0,0,0,0,1,0,0,0,
+	0,0,0,0,1,0,0,0,
+	0,0,0,0,1,0,0,0,
+	0,0,0,0,0,0,0,0,
+	0,0,0,0,0,0,0,0,
+	0,0,0,0,0,0,0,0,
+}}}
+func glyphW() bitmap { return bitmap{8,12,[]uint8{
+	1,0,0,0,0,0,0,1,
+	1,0,0,0,0,0,0,1,
+	1,0,0,0,0,0,0,1,
+	1,0,0,0,0,0,0,1,
+	1,0,0,0,0,0,0,1,
+	1,0,0,0,0,0,0,1,
+	1,0,0,0,0,0,0,1,
+	1,0,0,0,0,0,0,1,
+	0,1,1,1,1,1,1,0,
+	0,0,0,0,0,0,0,0,
+	0,0,0,0,0,0,0,0,
+	0,0,0,0,0,0,0,0,
+}}}
+func glyphI() bitmap { return bitmap{8,12,[]uint8{
+	0,0,1,1,1,1,0,0,
+	0,0,0,0,1,0,0,0,
+	0,0,0,0,1,0,0,0,
+	0,0,0,0,1,0,0,0,
+	0,0,0,0,1,0,0,0,
+	0,0,0,0,1,0,0,0,
+	0,0,0,0,1,0,0,0,
+	0,0,0,0,1,0,0,0,
+	0,0,1,1,1,1,0,0,
+	0,0,0,0,0,0,0,0,
+	0,0,0,0,0,0,0,0,
+	0,0,0,0,0,0,0,0,
+}}}
+func glyphC() bitmap { return bitmap{8,12,[]uint8{
+	0,0,1,1,1,1,0,0,
+	0,1,0,0,0,0,1,0,
+	1,0,0,0,0,0,0,1,
+	1,0,0,0,0,0,0,0,
+	1,0,0,0,0,0,0,0,
+	1,0,0,0,0,0,0,0,
+	1,0,0,0,0,0,0,0,
+	0,1,0,0,0,0,1,0,
+	0,0,1,1,1,1,0,0,
+	0,0,0,0,0,0,0,0,
+	0,0,0,0,0,0,0,0,
+	0,0,0,0,0,0,0,0,
+}}}
+func glyphH() bitmap { return bitmap{8,12,[]uint8{
+	1,0,0,0,0,0,0,1,
+	1,0,0,0,0,0,0,1,
+	1,0,0,0,0,0,0,1,
+	1,0,0,0,0,0,0,1,
+	1,1,1,1,1,1,1,1,
+	1,0,0,0,0,0,0,1,
+	1,0,0,0,0,0,0,1,
+	1,0,0,0,0,0,0,1,
+	1,0,0,0,0,0,0,1,
+	0,0,0,0,0,0,0,0,
+	0,0,0,0,0,0,0,0,
+	0,0,0,0,0,0,0,0,
+}}}
+func glyphO() bitmap { return bitmap{8,12,[]uint8{
+	0,0,1,1,1,1,0,0,
+	0,1,0,0,0,0,1,0,
+	1,0,0,0,0,0,0,1,
+	1,0,0,0,0,0,0,1,
+	1,0,0,0,0,0,0,1,
+	1,0,0,0,0,0,0,1,
+	1,0,0,0,0,0,0,1,
+	0,1,0,0,0,0,1,0,
+	0,0,1,1,1,1,0,0,
+	0,0,0,0,0,0,0,0,
+	0,0,0,0,0,0,0,0,
+	0,0,0,0,0,0,0,0,
+}}}
+func glyphU() bitmap { return bitmap{8,12,[]uint8{
+	1,0,0,0,0,0,0,1,
+	1,0,0,0,0,0,0,1,
+	1,0,0,0,0,0,0,1,
+	1,0,0,0,0,0,0,1,
+	1,0,0,0,0,0,0,1,
+	1,0,0,0,0,0,0,1,
+	1,0,0,0,0,0,0,1,
+	0,1,0,0,0,0,1,0,
+	0,0,1,1,1,1,0,0,
+	0,0,0,0,0,0,0,0,
+	0,0,0,0,0,0,0,0,
+	0,0,0,0,0,0,0,0,
+}}}
+func glyphS() bitmap { return bitmap{8,12,[]uint8{
+	0,0,1,1,1,1,1,0,
+	0,1,0,0,0,0,0,1,
+	1,0,0,0,0,0,0,0,
+	0,1,1,1,1,1,1,0,
+	0,0,0,0,0,0,0,1,
+	0,0,0,0,0,0,0,1,
+	0,0,0,0,0,0,0,1,
+	1,0,0,0,0,0,0,1,
+	0,1,1,1,1,1,1,0,
+	0,0,0,0,0,0,0,0,
+	0,0,0,0,0,0,0,0,
+	0,0,0,0,0,0,0,0,
+}}}
+func glyphE() bitmap { return bitmap{8,12,[]uint8{
+	0,1,1,1,1,1,1,1,
+	0,1,0,0,0,0,0,0,
+	0,1,0,0,0,0,0,0,
+	0,1,1,1,1,1,1,0,
+	0,1,0,0,0,0,0,0,
+	0,1,0,0,0,0,0,0,
+	0,1,0,0,0,0,0,0,
+	0,1,0,0,0,0,0,0,
+	0,1,1,1,1,1,1,1,
+	0,0,0,0,0,0,0,0,
+	0,0,0,0,0,0,0,0,
+	0,0,0,0,0,0,0,0,
+}}}
+func glyphN() bitmap { return bitmap{8,12,[]uint8{
+	1,0,0,0,0,0,0,1,
+	1,0,0,0,0,0,0,1,
+	1,1,0,0,0,0,0,1,
+	1,0,1,0,0,0,0,1,
+	1,0,0,1,0,0,0,1,
+	1,0,0,0,1,0,0,1,
+	1,0,0,0,0,1,0,1,
+	1,0,0,0,0,0,1,1,
+	1,0,0,0,0,0,0,1,
+	0,0,0,0,0,0,0,0,
+	0,0,0,0,0,0,0,0,
+	0,0,0,0,0,0,0,0,
+}}}
+func glyphG() bitmap { return bitmap{8,12,[]uint8{
+	0,0,1,1,1,1,1,0,
+	0,1,0,0,0,0,0,1,
+	1,0,0,0,0,0,0,0,
+	1,0,0,0,1,1,1,1,
+	1,0,0,0,0,0,0,1,
+	1,0,0,0,0,0,0,1,
+	1,0,0,0,0,0,0,1,
+	0,1,0,0,0,0,1,0,
+	0,0,1,1,1,1,0,0,
+	0,0,0,0,0,0,0,0,
+	0,0,0,0,0,0,0,0,
+	0,0,0,0,0,0,0,0,
+}}}
+func glyphB() bitmap { return bitmap{8,12,[]uint8{
+	1,1,1,1,1,1,0,0,
+	1,0,0,0,0,0,1,0,
+	1,0,0,0,0,0,0,1,
+	1,0,0,0,0,0,1,0,
+	1,1,1,1,1,1,0,0,
+	1,0,0,0,0,0,1,0,
+	1,0,0,0,0,0,0,1,
+	1,0,0,0,0,0,0,1,
+	1,1,1,1,1,1,0,0,
+	0,0,0,0,0,0,0,0,
+	0,0,0,0,0,0,0,0,
+	0,0,0,0,0,0,0,0,
+}}}
+func glyphK() bitmap { return bitmap{8,12,[]uint8{
+	1,0,0,0,0,0,0,1,
+	1,0,0,0,0,0,1,0,
+	1,0,0,0,0,1,0,0,
+	1,0,0,0,1,0,0,0,
+	1,1,1,1,0,0,0,0,
+	1,0,0,0,1,0,0,0,
+	1,0,0,0,0,1,0,0,
+	1,0,0,0,0,0,1,0,
+	1,0,0,0,0,0,0,1,
+	0,0,0,0,0,0,0,0,
+	0,0,0,0,0,0,0,0,
+	0,0,0,0,0,0,0,0,
+}}}
+
 func keyTextBg(text string, bg color.RGBA) *image.RGBA {
 	img := newImg()
 	fillRect(img, img.Bounds(), bg)

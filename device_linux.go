@@ -86,17 +86,20 @@ func platformReboot() {
 
 func platformLoadFontPaths() []string {
 	return []string{
-		// Liberation Serif (may render better)
+		// Noto CJK (Japanese, highest priority)
+		"/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+		"/usr/share/fonts/noto-cjk/NotoSansCJK-Bold.ttc",
+
+		// Liberation Serif/Sans (fallback)
 		"/usr/share/fonts/liberation/LiberationSerif-Regular.ttf",
-		"/usr/share/fonts/liberation/LiberationSerif-Bold.ttf",
-		// Liberation Sans (fallback)
 		"/usr/share/fonts/liberation/LiberationSans-Regular.ttf",
-		"/usr/share/fonts/liberation/LiberationSans-Bold.ttf",
 
 		// DejaVu Sans
 		"/usr/share/fonts/TTF/DejaVuSans.ttf",
-		"/usr/share/fonts/TTF/DejaVuSans-Bold.ttf",
+		"/usr/share/fonts/Adwaita/AdwaitaSans-Regular.ttf",
 	}
+
+	// All paths below exist on Arch - keeping minimal list
 }
 
 // platformGetClipboard gets text from clipboard on Linux
