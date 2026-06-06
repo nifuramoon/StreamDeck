@@ -496,7 +496,7 @@ func twImg(profURL, login string) *image.RGBA {
 		if scrollMode == "category" {
 			col = color.RGBA{200, 245, 255, 255}
 		}
-		y := H - 20 // さらに1ピクセル上に調整
+		y := H - 21 // さらに1ピクセル上に調整
 		fillRect(img, image.Rect(0, y-2, W, H), color.RGBA{0, 0, 0, 230})
 		tx := txt + "   "
 		if tw := float64(measureText(tx, 14)); tw > 0 {
