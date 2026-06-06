@@ -476,7 +476,7 @@ func twImg(profURL, login string) *image.RGBA {
 	if v > 0 {
 		s := formatViewerCount(v)
 		tw := measureText(s, 11)
-		fillRect(img, image.Rect(4, 3, tw+10, 18), color.RGBA{40, 80, 120, 220}) // 青色に調整
+		fillRect(img, image.Rect(4, 3, tw+10, 18), color.RGBA{20, 20, 30, 240}) // 濃い背景
 		drawText(img, 7, 4, s, color.RGBA{255, 255, 255, 255}, 11)
 	}
 	if st > 0 {
@@ -496,7 +496,7 @@ func twImg(profURL, login string) *image.RGBA {
 		if scrollMode == "category" {
 			col = color.RGBA{200, 245, 255, 255}
 		}
-		y := H - 18 // 2ピクセル上に調整
+		y := H - 19 // 1ピクセル上に調整
 		fillRect(img, image.Rect(0, y-2, W, H), color.RGBA{0, 0, 0, 230})
 		tx := txt + "   "
 		if tw := float64(measureText(tx, 14)); tw > 0 {
