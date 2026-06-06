@@ -487,9 +487,9 @@ func twImg(profURL, login string) *image.RGBA {
 			lab = fmt.Sprintf("%dh%dm", h, m)
 		}
 		tw := measureText(lab, 11)
-		xOffset := W - tw - 15
-		fillRect(img, image.Rect(xOffset, 3, xOffset+tw+6, 18), color.RGBA{120, 60, 40, 220}) // オレンジ色に調整
-		drawText(img, xOffset+3, 4, lab, color.RGBA{255, 255, 255, 255}, 11)
+		xOffset := W - tw - 4
+		fillRect(img, image.Rect(xOffset, 0, W, 16), color.RGBA{0, 0, 0, 200})
+		drawText(img, xOffset+2, 1, lab, color.RGBA{255, 255, 255, 255}, 11)
 	}
 	if txt != "" {
 		col := color.RGBA{255, 217, 0, 255}
