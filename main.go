@@ -786,13 +786,7 @@ func drawText(img *image.RGBA, x, y int, text string, col color.RGBA, size float
 
 	// Try multiple approaches for rendering
 
-	// アプローチ1: opentypeを使用（より良い日本語サポート）
-	if containsJapanese && tryDrawWithOpenType(img, x, y, text, col, size) {
-		debugLog("[Font Debug] Japanese text drawn with opentype: '%s'", text)
-		return
-	}
-
-	// アプローチ2: 従来のtruetypeを使用
+	// アプローチ1: freetype/truetypeを使用（LiberationSansはfreetypeで読み込み済み）
 	face := truetype.NewFace(fontRegular, &truetype.Options{
 		Size:    size,
 		DPI:     72,
@@ -800,22 +794,21 @@ func drawText(img *image.RGBA, x, y int, text string, col color.RGBA, size float
 	})
 	defer face.Close()
 
-	// Test if font can render the text
+	// Test if font can render the first character
 	canRender := true
-	if containsJapanese {
-		// Test first character
-		if len(text) > 0 {
-			r := []rune(text)[0]
-			advance, ok := face.GlyphAdvance(r)
-			if !ok || advance == 0 {
-				canRender = false
-				debugLog("[Font Debug] Font cannot render Japanese character: U+%04X '%c'", r, r)
-			}
+	if containsJapanese && len(text) > 0 {
+		r := []rune(text)[0]
+		advance, ok := face.GlyphAdvance(r)
+		if !ok || advance == 0 {
+			canRender = false
 		}
 	}
 
 	if !canRender {
-		// Fallback to simple text rendering
+		// Try opentype as backup
+		if tryDrawWithOpenType(img, x, y, text, col, size) {
+			return
+		}
 		drawSimpleText(img, x, y, text, col, size)
 		return
 	}
