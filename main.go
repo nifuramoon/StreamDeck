@@ -130,7 +130,7 @@ var (
 	tokenManager *TokenManager
 
 	// Debug mode flag - set to true for verbose logging
-	debugMode = true
+	debugMode = false
 )
 
 type stackEntry struct{ page, ctx string }
