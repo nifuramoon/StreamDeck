@@ -6,10 +6,10 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"time"
 )
 
-// TokenInfo holds token information with metadata
 type TokenInfo struct {
 	AccessToken  string    `json:"access_token"`
 	RefreshToken string    `json:"refresh_token"`
@@ -23,189 +23,130 @@ type TokenInfo struct {
 	LastUsed     time.Time `json:"last_used"`
 }
 
-// TokenManager handles token backup, restore, and validation
 type TokenManager struct {
-	configDir    string
-	tokensFile   string
-	backupDir    string
-	currentToken *TokenInfo
+	tokensFile string
+	backupDir  string
+	token      *TokenInfo
 }
 
-// NewTokenManager creates a new token manager
+var configDir = func() string {
+	h, _ := os.UserHomeDir()
+	return filepath.Join(h, ".config", "streamdeck-twitch")
+}()
+
 func NewTokenManager() *TokenManager {
-	configDir := getConfigDir()
-	backupDir := filepath.Join(configDir, "backups")
-
-	// Create backup directory if it doesn't exist
-	os.MkdirAll(backupDir, 0755)
-
+	d := filepath.Join(configDir, "backups")
+	os.MkdirAll(d, 0755)
 	return &TokenManager{
-		configDir:  configDir,
 		tokensFile: filepath.Join(configDir, "tokens.json"),
-		backupDir:  backupDir,
+		backupDir:  d,
 	}
 }
 
-// SaveToken saves a new token and creates a backup
-func (tm *TokenManager) SaveToken(token *TokenInfo) error {
-	tm.currentToken = token
-
-	// Save to main tokens file
-	if err := tm.saveToFile(tm.tokensFile, token); err != nil {
-		return fmt.Errorf("failed to save token: %v", err)
+func (tm *TokenManager) SaveToken(t *TokenInfo) error {
+	tm.token = t
+	data, _ := json.MarshalIndent(t, "", "  ")
+	if err := os.WriteFile(tm.tokensFile, data, 0600); err != nil {
+		return err
 	}
-
-	// Create timestamped backup
-	backupFile := filepath.Join(tm.backupDir,
-		fmt.Sprintf("tokens_%s_%s.json",
-			token.LoginName,
-			time.Now().Format("20060102_150405")))
-
-	if err := tm.saveToFile(backupFile, token); err != nil {
-		log.Printf("[Token] Warning: failed to create backup: %v", err)
-	}
-
-	log.Printf("[Token] Token saved for user: %s (%s)", token.DisplayName, token.LoginName)
-	log.Printf("[Token] Backup created: %s", backupFile)
-
+	// Backup
+	backup := filepath.Join(tm.backupDir, fmt.Sprintf("tokens_%s_%s.json",
+		t.LoginName, time.Now().Format("20060102_150405")))
+	os.WriteFile(backup, data, 0600) // ignore backup error
+	log.Printf("[Token] Saved for %s (%s), backup: %s", t.DisplayName, t.LoginName, backup)
 	return nil
 }
 
-// LoadToken loads the most recent token
 func (tm *TokenManager) LoadToken() (*TokenInfo, error) {
-	// Try to load from main file first
-	if data, err := os.ReadFile(tm.tokensFile); err == nil {
-		var token TokenInfo
-		if err := json.Unmarshal(data, &token); err == nil {
-			tm.currentToken = &token
-			log.Printf("[Token] Loaded token for user: %s", token.LoginName)
-			return &token, nil
-		}
+	// Try main file
+	if t, err := tm.loadFile(tm.tokensFile); err == nil {
+		tm.token = t
+		log.Printf("[Token] Loaded for %s", t.LoginName)
+		return t, nil
 	}
-
-	// If main file doesn't exist or is corrupted, try to find latest backup
-	backups, err := filepath.Glob(filepath.Join(tm.backupDir, "tokens_*.json"))
-	if err != nil || len(backups) == 0 {
+	// Try latest backup
+	entries, err := os.ReadDir(tm.backupDir)
+	if err != nil {
 		return nil, fmt.Errorf("no tokens found")
 	}
-
-	// Find the latest backup
-	var latestBackup string
-	var latestTime time.Time
-
-	for _, backup := range backups {
-		info, err := os.Stat(backup)
-		if err != nil {
-			continue
-		}
-
-		if info.ModTime().After(latestTime) {
-			latestTime = info.ModTime()
-			latestBackup = backup
+	var latest os.DirEntry
+	for _, e := range entries {
+		if !e.IsDir() && filepath.Ext(e.Name()) == ".json" {
+			if latest == nil || e.Name() > latest.Name() {
+				latest = e
+			}
 		}
 	}
-
-	if latestBackup == "" {
-		return nil, fmt.Errorf("no valid backups found")
+	if latest == nil {
+		return nil, fmt.Errorf("no valid backups")
 	}
-
-	// Load from backup
-	data, err := os.ReadFile(latestBackup)
+	t, err := tm.loadFile(filepath.Join(tm.backupDir, latest.Name()))
 	if err != nil {
-		return nil, fmt.Errorf("failed to read backup: %v", err)
+		return nil, err
 	}
-
-	var token TokenInfo
-	if err := json.Unmarshal(data, &token); err != nil {
-		return nil, fmt.Errorf("failed to parse backup: %v", err)
-	}
-
-	tm.currentToken = &token
-	log.Printf("[Token] Restored token from backup: %s (user: %s)",
-		filepath.Base(latestBackup), token.LoginName)
-
-	return &token, nil
+	tm.token = t
+	log.Printf("[Token] Restored from backup: %s (%s)", latest.Name(), t.LoginName)
+	return t, nil
 }
 
-// ValidateToken checks if the current token is valid
+func (tm *TokenManager) loadFile(path string) (*TokenInfo, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var t TokenInfo
+	if err := json.Unmarshal(data, &t); err != nil {
+		return nil, err
+	}
+	return &t, nil
+}
+
 func (tm *TokenManager) ValidateToken() (bool, string) {
-	if tm.currentToken == nil {
+	if tm.token == nil {
 		return false, "No token loaded"
 	}
-
-	// Check if token is expired
-	if time.Now().After(tm.currentToken.ExpiresAt) {
-		return false, fmt.Sprintf("Token expired at %s",
-			tm.currentToken.ExpiresAt.Format("2006-01-02 15:04:05"))
+	if time.Now().After(tm.token.ExpiresAt) {
+		return false, "Token expired"
 	}
-
-	// Check if token was created more than 60 days ago (typical max lifetime)
-	if time.Since(tm.currentToken.CreatedAt) > 60*24*time.Hour {
-		return false, fmt.Sprintf("Token too old (created at %s)",
-			tm.currentToken.CreatedAt.Format("2006-01-02"))
+	if time.Since(tm.token.CreatedAt) > 60*24*time.Hour {
+		return false, "Token too old (>60 days)"
 	}
-
-	return true, "Token is valid"
+	return true, "Valid"
 }
 
-// GetCurrentToken returns the current token
-func (tm *TokenManager) GetCurrentToken() *TokenInfo {
-	return tm.currentToken
-}
+func (tm *TokenManager) GetCurrentToken() *TokenInfo { return tm.token }
 
-// UpdateLastUsed updates the last used timestamp
 func (tm *TokenManager) UpdateLastUsed() {
-	if tm.currentToken != nil {
-		tm.currentToken.LastUsed = time.Now()
-		// Save the update
-		tm.saveToFile(tm.tokensFile, tm.currentToken)
+	if tm.token == nil {
+		return
 	}
+	tm.token.LastUsed = time.Now()
+	data, _ := json.MarshalIndent(tm.token, "", "  ")
+	os.WriteFile(tm.tokensFile, data, 0600)
 }
 
-// ListBackups returns a list of all backups
 func (tm *TokenManager) ListBackups() []string {
-	backups, _ := filepath.Glob(filepath.Join(tm.backupDir, "tokens_*.json"))
-	return backups
+	entries, _ := os.ReadDir(tm.backupDir)
+	var names []string
+	for _, e := range entries {
+		if !e.IsDir() && filepath.Ext(e.Name()) == ".json" {
+			names = append(names, filepath.Join(tm.backupDir, e.Name()))
+		}
+	}
+	sort.Strings(names)
+	return names
 }
 
-// RestoreFromBackup restores a token from a specific backup file
-func (tm *TokenManager) RestoreFromBackup(backupFile string) error {
-	data, err := os.ReadFile(backupFile)
-	if err != nil {
-		return fmt.Errorf("failed to read backup: %v", err)
-	}
-
-	var token TokenInfo
-	if err := json.Unmarshal(data, &token); err != nil {
-		return fmt.Errorf("failed to parse backup: %v", err)
-	}
-
-	tm.currentToken = &token
-
-	// Save to main file
-	if err := tm.saveToFile(tm.tokensFile, &token); err != nil {
-		return fmt.Errorf("failed to save restored token: %v", err)
-	}
-
-	log.Printf("[Token] Restored token from: %s", filepath.Base(backupFile))
-	return nil
-}
-
-// saveToFile saves token to a file
-func (tm *TokenManager) saveToFile(filename string, token *TokenInfo) error {
-	data, err := json.MarshalIndent(token, "", "  ")
+func (tm *TokenManager) RestoreFromBackup(path string) error {
+	t, err := tm.loadFile(path)
 	if err != nil {
 		return err
 	}
-
-	return os.WriteFile(filename, data, 0600)
-}
-
-// getConfigDir returns the configuration directory
-func getConfigDir() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		home = "."
+	tm.token = t
+	data, _ := json.MarshalIndent(t, "", "  ")
+	if err := os.WriteFile(tm.tokensFile, data, 0600); err != nil {
+		return err
 	}
-	return filepath.Join(home, ".config", "streamdeck-twitch")
+	log.Printf("[Token] Restored from: %s", filepath.Base(path))
+	return nil
 }

@@ -21,63 +21,61 @@ import (
 	"golang.org/x/image/font/sfnt"
 )
 
-// --- Device Structure ---
+const (
+	V2_PAGE_PACKET_SZ = 1024
+	V2_ITER_SZ        = 1016
+	V2_HEADER_SZ      = 8
+	MAX_KEYS          = 15
+	MAX_TWITCH_KEYS   = 14
+	SCROLL_IV         = 0.033
+	FETCH_IV          = 3
+	IDLE_TIMEOUT      = 60.0
+	W                 = 72
+	H                 = 72
+)
+
+const (
+	HOME = "home"
+	TW   = "tw"
+	LV   = "lv"
+	TX   = "tx"
+	NX   = "nx"
+	ST   = "st"
+	SD   = "sd"
+	OA   = "oa"
+	FN   = "fn"
+	UI   = "ui"
+)
+
+var (
+	CID, CS, SCOPE, AT, RT, UID string
+
+	EMOTES     = []string{"BloodTrail", "HeyGuys", "LUL", "DinoDance", "HungryPaimon", "GlitchCat"}
+	FONT_NAMES = []string{"Noto Sans Bold", "Noto Sans Regular", "DejaVu Sans", "Liberation Sans", "Liberation Serif"}
+	FONT_PATHS = map[string]string{
+		"Noto Sans Bold":    "/usr/share/fonts/noto-cjk/NotoSansCJK-Bold.ttc",
+		"Noto Sans Regular": "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+		"DejaVu Sans":       "/usr/share/fonts/TTF/DejaVuSans.ttf",
+		"Liberation Sans":   "/usr/share/fonts/liberation/LiberationSans-Regular.ttf",
+		"Liberation Serif":  "/usr/share/fonts/liberation/LiberationSerif-Regular.ttf",
+	}
+	selectedFont  = "Noto Sans Bold"
+	DEFAULT_TEXTS = []string{"うおw", "うま", "うっま", "あ", "www", "wwww", "wwwww", "wwwww", "こっから勝・つ・ぞ！オイ！💃", "んん〜まかｧｧウｯｯ!!!!🤏😎", "うおおおおおおおおお", "きたあああああああ", "いいね"}
+	DEFAULT_NEXT  = []string{"あ）"}
+	DEFAULT_FOLLOWS = []string{"hanjoudesu", "bijusan", "oniyadayo", "dmf_kyochan", "vodkavdk", "lazvell", "ade3_3", "goroujp", "batora324", "kato_junichi0817", "crowfps__", "gon_vl", "yuyuta0702"}
+)
+
 type V2Device struct {
 	file       *os.File
 	cb         func(int, bool)
 	mu         sync.Mutex
 	closed     bool
 	prevImages []string
-	virtualDir string // if set, save PNGs here instead of USB
+	virtualDir string
 }
 
-// --- Constants & Config ---
-const (
-	V2_PAGE_PACKET_SZ = 1024
-	V2_ITER_SZ        = 1016
-	V2_HEADER_SZ      = 8
-
-	MAX_KEYS        = 15
-	MAX_TWITCH_KEYS = 14
-	SCROLL_IV       = 0.033
-	FETCH_IV        = 3
-	IDLE_TIMEOUT    = 60.0
-	W               = 72
-	H               = 72
-)
-
-const (
-	HOME, TW, LV, TX, NX, ST, SD, OA, FN, UI = "home", "tw", "lv", "tx", "nx", "st", "sd", "oa", "fn", "ui"
-)
-
-var (
-	// グローバル変数（main関数内で初期化）
-	CID   string
-	CS    string
-	SCOPE string
-	AT    string
-	RT    string
-	UID   string
-	IRC_T string
-)
-
-var EMOTES = []string{"BloodTrail", "HeyGuys", "LUL", "DinoDance", "HungryPaimon", "GlitchCat"}
-var FONT_NAMES = []string{"Noto Sans Bold", "Noto Sans Regular", "DejaVu Sans", "Liberation Sans", "Liberation Serif"}
-var FONT_PATHS = map[string]string{
-	"Noto Sans Bold":    "/usr/share/fonts/noto-cjk/NotoSansCJK-Bold.ttc",
-	"Noto Sans Regular": "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
-	"DejaVu Sans":       "/usr/share/fonts/TTF/DejaVuSans.ttf",
-	"Liberation Sans":   "/usr/share/fonts/liberation/LiberationSans-Regular.ttf",
-	"Liberation Serif":  "/usr/share/fonts/liberation/LiberationSerif-Regular.ttf",
-}
-var selectedFont string = "Noto Sans Bold"
-var DEFAULT_TEXTS = []string{"うおw", "うま", "うっま", "あ", "www", "wwww", "wwwww", "wwwww", "こっから勝・つ・ぞ！オイ！💃", "んん〜まかｧｧウｯｯ!!!!🤏😎", "うおおおおおおおおお", "きたあああああああ", "いいね"}
-var DEFAULT_NEXT = []string{"あ）"}
-
-// --- Globals ---
 var (
 	sdeck      *V2Device
-	deckMu     sync.Mutex
 	page       = TW
 	stack      []stackEntry
 	live       string
@@ -100,43 +98,27 @@ var (
 	titleW     = map[string]float64{}
 	catW       = map[string]float64{}
 
-	profCache  = NewLRU(50)
-	httpClient = &http.Client{Timeout: 10 * time.Second}
-
-	fontRegular *truetype.Font
-	fontSmall   *truetype.Font
-	// OpenType font for rendering (replaces broken truetype Glyph)
-	otFont     *sfnt.Font
-	otFontData []byte // raw font bytes for creating faces
-
-	scrollMode = "title"
-
-	// Cache directories
+	profCache       = NewLRU(50)
+	httpClient      = &http.Client{Timeout: 10 * time.Second}
+	fontRegular     *truetype.Font
+	fontSmall       *truetype.Font
+	otFont          *sfnt.Font
+	otFontData      []byte
+	scrollMode      = "title"
 	profDir         string
 	followCachePath string
-
-	// State tracking
 	lastOnlineCount int
 	titleWrapped    = map[string]bool{}
 	catWrapped      = map[string]bool{}
-
-	// Stream notification tracking
-	prevOnline          map[string]bool
-	prevOnlineMu        sync.RWMutex
-
-	// Log analyzer for automatic error detection and fixes
-	logAnalyzer *LogAnalyzer
-
-	// Token manager for OAuth token handling
-	tokenManager *TokenManager
-
-	// Debug mode flag - set to true for verbose logging
-	debugMode = false
+	prevOnline      map[string]bool
+	prevOnlineMu    sync.RWMutex
+	logAnalyzer     *LogAnalyzer
+	tokenManager    *TokenManager
+	debugMode       = false
 )
 
 type stackEntry struct{ page, ctx string }
 
-// --- LRU Cache ---
 type LRUCache struct {
 	mu   sync.Mutex
 	data map[string]interface{}
@@ -144,7 +126,9 @@ type LRUCache struct {
 	max  int
 }
 
-func NewLRU(max int) *LRUCache { return &LRUCache{data: make(map[string]interface{}), max: max} }
+func NewLRU(max int) *LRUCache {
+	return &LRUCache{data: make(map[string]interface{}), max: max}
+}
 
 func (c *LRUCache) Get(key string) (interface{}, bool) {
 	c.mu.Lock()
@@ -152,6 +136,7 @@ func (c *LRUCache) Get(key string) (interface{}, bool) {
 	v, ok := c.data[key]
 	return v, ok
 }
+
 func (c *LRUCache) Set(key string, val interface{}) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -165,51 +150,161 @@ func (c *LRUCache) Set(key string, val interface{}) {
 	}
 }
 
-// Simple Japanese character drawing functions
-// These draw simplified representations of common characters
+func init() {
+	userCache, err := os.UserCacheDir()
+	if err != nil {
+		userCache = os.TempDir()
+	}
+	cacheDir := filepath.Join(userCache, "streamdeck-twitch")
+	profDir = filepath.Join(cacheDir, "profiles")
+	followCachePath = filepath.Join(cacheDir, "followed.json")
+	os.MkdirAll(profDir, 0755)
+	logf("INFO", "キャッシュディレクトリ: %s", cacheDir)
+}
+
+func main() {
+	loadEnv()
+
+	if len(os.Args) > 1 && os.Args[1] == "--auto-fix" {
+		infoLog("自動修正モードで起動")
+		if !RunWithAutoFix() {
+			errorLog("自動修正モードで起動失敗")
+			os.Exit(1)
+		}
+		return
+	}
+
+	if !checkAndSetupConfig() {
+		errorLog("Configuration not complete. Edit config file and restart.")
+		os.Exit(1)
+	}
+
+	logAnalyzer = NewLogAnalyzer()
+	logf("INFO", "[LOG ANALYZER] Log monitoring started")
+
+	tokenManager = NewTokenManager()
+	initToken()
+
+	loadFonts()
+
+	if len(os.Args) > 1 && os.Args[1] == "--virtual" {
+		runVirtual()
+		return
+	}
+
+	var err error
+	if sdeck, err = openStreamDeck(); err != nil {
+		log.Fatalf("[ERROR] Stream Deck: %v", err)
+	}
+	defer sdeck.Close()
+
+	sdeck.cb = func(idx int, pressed bool) { if pressed { onKey(idx, true) } }
+	go sdeck.readLoop()
+	sdeck.SetBrightness(brightness)
+
+	if AT == "" {
+		show(HOME, "", false)
+		logAnalyzer.LogError("NO_TOKEN", "Access Token not set at startup")
+		infoLog("Access Token not set. Start authentication from OAuth button on HOME page.")
+	} else {
+		show(TW, "", false)
+	}
+
+	initFollows()
+	fetchUsers(followed)
+	prevOnline = loadPrevOnlineState()
+
+	go bgLoop()
+	go ircLoop()
+	mainLoop()
+}
+
+func loadEnv() {
+	CID = getEnv("TWITCH_CLIENT_ID", "")
+	CS = getEnv("TWITCH_CLIENT_SECRET", "")
+	SCOPE = getEnv("TWITCH_SCOPE", "user:read:email user:read:follows user:read:broadcast user:write:chat chat:read")
+	AT = os.Getenv("TWITCH_ACCESS_TOKEN")
+	RT = os.Getenv("TWITCH_REFRESH_TOKEN")
+	UID = os.Getenv("TWITCH_USER_ID")
+}
+
+func initToken() {
+	token, err := tokenManager.LoadToken()
+	if err != nil {
+		return
+	}
+	valid, reason := tokenManager.ValidateToken()
+	if !valid {
+		logf("WARN", "Token validation failed: %s", reason)
+		logAnalyzer.LogTokenError("VALIDATION_FAILED", reason)
+		AT = ""
+		return
+	}
+	AT, RT, UID, CID = token.AccessToken, token.RefreshToken, token.UserID, token.ClientID
+	logf("INFO", "Using valid token for user: %s (%s)", token.DisplayName, token.LoginName)
+	logf("DEBUG", "Token scope: %s (preserved: %s)", token.Scope, SCOPE)
+	tokenManager.UpdateLastUsed()
+
+	if cfg := loadConfigFromFile(); cfg.Scope != "" {
+		SCOPE = cfg.Scope
+		logf("INFO", "Reset SCOPE from config: %s", SCOPE)
+	}
+}
+
+func runVirtual() {
+	infoLog("仮想モード起動（デバイスなし）")
+	outDir := "/home/nifuramu/Desktop/streamdeck_test"
+	os.RemoveAll(outDir)
+	os.MkdirAll(outDir, 0755)
+	sdeck = &V2Device{virtualDir: outDir, prevImages: make([]string, MAX_KEYS)}
+	p := HOME
+	if len(os.Args) > 2 && os.Args[2] == "tw" {
+		p = TW
+	}
+	show(p, "", false)
+	infoLog("ページ %s のテスト画像を %s に出力しました", p, outDir)
+}
+
+func initFollows() {
+	cached := loadFollowedFromCache()
+	api := fetchFollowedFromAPI()
+	switch {
+	case len(api) > 0:
+		followed = api
+		saveFollowedToCache(api)
+	case len(cached) > 0:
+		followed = cached
+		infoLog("APIからフォローリストを取得できなかったため、キャッシュを使用します")
+	default:
+		followed = DEFAULT_FOLLOWS
+		infoLog("キャッシュもAPIも利用できないため、デフォルトのフォローリストを使用します")
+	}
+}
+
+// --- Device ---
 
 func (s *V2Device) ClearAllBtns() {
 	for i := 0; i < MAX_KEYS; i++ {
 		s.FillBlank(i)
 	}
 }
+
 func (s *V2Device) Close() {
 	s.closed = true
 	if s.file != nil {
 		s.file.Close()
 	}
 }
+
 func (s *V2Device) FillBlank(idx int) {
 	img := image.NewRGBA(image.Rect(0, 0, W, H))
 	draw.Draw(img, img.Bounds(), image.NewUniform(color.RGBA{0, 0, 0, 255}), image.Point{}, draw.Src)
 	s.FillImage(idx, img)
 }
+
 func (s *V2Device) FillImage(idx int, img image.Image) {
 	if s.virtualDir != "" {
-		dst := image.NewRGBA(image.Rect(0, 0, 72, 72))
-		r, g, b, a := img.At(0, 0).RGBA()
-		log.Printf("[Virtual FillImage] btn%d img.At(0,0)=RGBA(%d,%d,%d,%d)", idx, r/257, g/257, b/257, a/257)
-		// Use the actual image color
-		for y := 0; y < 72; y++ {
-			for x := 0; x < 72; x++ {
-				rr, gg, bb, aa := img.At(x, y).RGBA()
-				off := dst.PixOffset(x, y)
-				dst.Pix[off+0] = uint8(rr / 257)
-				dst.Pix[off+1] = uint8(gg / 257)
-				dst.Pix[off+2] = uint8(bb / 257)
-				dst.Pix[off+3] = uint8(aa / 257)
-			}
-		}
-		// Also check after copy
-		r2, g2, b2, _ := dst.At(0, 0).RGBA()
-		log.Printf("[Virtual FillImage] btn%d dst.At(0,0)=RGBA(%d,%d,%d)", idx, r2/257, g2/257, b2/257)
-		fname := filepath.Join(s.virtualDir, fmt.Sprintf("btn%d.png", idx))
-		f, _ := os.Create(fname)
-		if f != nil {
-			png.Encode(f, dst)
-			f.Close()
-			log.Printf("[Virtual] Saved button %d to %s", idx, fname)
-		}
+		s.saveVirtual(idx, img)
 		return
 	}
 
@@ -245,6 +340,29 @@ func (s *V2Device) FillImage(idx int, img image.Image) {
 		pageNum++
 	}
 }
+
+func (s *V2Device) saveVirtual(idx int, img image.Image) {
+	dst := image.NewRGBA(image.Rect(0, 0, 72, 72))
+	for y := 0; y < 72; y++ {
+		for x := 0; x < 72; x++ {
+			r, g, b, a := img.At(x, y).RGBA()
+			off := dst.PixOffset(x, y)
+			dst.Pix[off+0] = uint8(r / 257)
+			dst.Pix[off+1] = uint8(g / 257)
+			dst.Pix[off+2] = uint8(b / 257)
+			dst.Pix[off+3] = uint8(a / 257)
+		}
+	}
+	fname := filepath.Join(s.virtualDir, fmt.Sprintf("btn%d.png", idx))
+	if f, err := os.Create(fname); err == nil {
+		png.Encode(f, dst)
+		f.Close()
+		if debugMode {
+			logf("DEBUG", "[Virtual] Saved button %d to %s", idx, fname)
+		}
+	}
+}
+
 func (s *V2Device) readLoop() {
 	prev := make([]byte, MAX_KEYS)
 	for !s.closed {
@@ -254,419 +372,239 @@ func (s *V2Device) readLoop() {
 			time.Sleep(10 * time.Millisecond)
 			continue
 		}
-		if buf[0] == 0x01 {
-			current := buf[4 : 4+MAX_KEYS]
-			for i := 0; i < MAX_KEYS; i++ {
-				if current[i] != prev[i] && s.cb != nil {
-					s.cb(i, current[i] == 1)
-				}
-			}
-			copy(prev, current)
+		if buf[0] != 0x01 {
+			continue
 		}
+		current := buf[4 : 4+MAX_KEYS]
+		for i := 0; i < MAX_KEYS; i++ {
+			if current[i] != prev[i] && s.cb != nil {
+				s.cb(i, current[i] == 1)
+			}
+		}
+		copy(prev, current)
 	}
 }
+
 func (s *V2Device) SetBrightness(percent int) {
 	payload := make([]byte, 32)
 	payload[0], payload[1], payload[2] = 0x03, 0x08, byte(percent)
 	if err := platformSetBrightness(s.file.Fd(), payload); err != nil {
-		log.Printf("[Brightness] error: %v", err)
+		logf("ERROR", "[Brightness] %v", err)
 	}
 }
 
-// --- Entry Point ---
-func init() {
-	userCache, err := os.UserCacheDir()
-	if err != nil {
-		userCache = os.TempDir()
-	}
-
-	cacheDir := filepath.Join(userCache, "streamdeck-twitch")
-	profDir = filepath.Join(cacheDir, "profiles")
-	followCachePath = filepath.Join(cacheDir, "followed.json")
-	os.MkdirAll(profDir, 0755)
-
-	log.Printf("[INFO] キャッシュディレクトリ: %s\n", cacheDir)
-}
-
-func main() {
-	CID = getEnvWithDefault("TWITCH_CLIENT_ID", "")
-	CS = getEnvWithDefault("TWITCH_CLIENT_SECRET", "")
-	SCOPE = getEnvWithDefault("TWITCH_SCOPE", "user:read:email user:read:follows user:read:broadcast user:write:chat chat:read")
-	AT = os.Getenv("TWITCH_ACCESS_TOKEN")
-	RT = os.Getenv("TWITCH_REFRESH_TOKEN")
-	UID = os.Getenv("TWITCH_USER_ID")
-	IRC_T = os.Getenv("TWITCH_IRC_TOKEN")
-
-	// Auto-fix mode check
-	if len(os.Args) > 1 && os.Args[1] == "--auto-fix" {
-		infoLog("自動修正モードで起動")
-		if !RunWithAutoFix() {
-			errorLog("自動修正モードで起動失敗")
-			os.Exit(1)
-		}
-		return
-	}
-
-	// Check and load configuration file
-	if !checkAndSetupConfig() {
-		errorLog("Configuration not complete. Edit config file and restart.")
-		os.Exit(1)
-	}
-
-	// Initialize log analyzer for error monitoring
-	logAnalyzer = NewLogAnalyzer()
-	log.Println("[LOG ANALYZER] Log monitoring started")
-
-	// Initialize token manager
-	tokenManager = NewTokenManager()
-
-	// Try to load existing token
-	if token, err := tokenManager.LoadToken(); err == nil {
-		// Validate the token
-		if valid, reason := tokenManager.ValidateToken(); valid {
-			// Set global variables from token
-			AT = token.AccessToken
-			RT = token.RefreshToken
-			UID = token.UserID
-			CID = token.ClientID
-			// DO NOT update SCOPE from token - keep config.json scope
-			// SCOPE = token.Scope  // COMMENTED OUT - preserve config scope
-
-			log.Printf("[Token] Using valid token for user: %s (%s)", token.DisplayName, token.LoginName)
-			log.Printf("[Token Debug] Token scope: %s (not updating global SCOPE)", token.Scope)
-			log.Printf("[Token Debug] Config scope (preserved): %s", SCOPE)
-			tokenManager.UpdateLastUsed()
-		} else {
-			log.Printf("[Token] Token validation failed: %s", reason)
-			logAnalyzer.LogTokenError("VALIDATION_FAILED", reason)
-			log.Println("[Token] Please re-authenticate using OAuth button")
-			AT = "" // Clear invalid token
-		}
-	}
-
-	// After token manager load, ensure SCOPE is set from config.json, not token
-	// Reload config to get the correct scope
-	config := loadConfigFromFile()
-	if config.Scope != "" {
-		SCOPE = config.Scope
-		log.Printf("[Config] Reset SCOPE from config after token load: %s", SCOPE)
-	}
-
-	loadFonts()
-
-	// Virtual mode: render button images to PNG files for testing without device
-	if len(os.Args) > 1 && os.Args[1] == "--virtual" {
-		infoLog("仮想モード起動（デバイスなし）")
-		outDir := "/home/nifuramu/Desktop/streamdeck_test"
-		os.RemoveAll(outDir)
-		os.MkdirAll(outDir, 0755)
-		sdeck = &V2Device{
-			virtualDir: outDir,
-			prevImages: make([]string, MAX_KEYS),
-		}
-		page := HOME
-		if len(os.Args) > 2 {
-			switch os.Args[2] {
-			case "tw": page = TW
-			case "home": page = HOME
-			}
-		}
-		show(page, "", false)
-		infoLog("ページ %s のテスト画像を %s に出力しました", page, outDir)
-		return
-	}
-
-	var err error
-	if sdeck, err = openStreamDeck(); err != nil {
-		log.Fatalf("[ERROR] Stream Deck: %v", err)
-	}
-	defer sdeck.Close()
-
-	sdeck.cb = func(idx int, pressed bool) {
-		if pressed {
-			onKey(idx, true)
-		}
-	}
-	go sdeck.readLoop()
-
-	sdeck.SetBrightness(brightness)
-
-	// Start from HOME page if no Access Token, otherwise start from TWITCH page
-	if AT == "" {
-		show(HOME, "", false)
-		logAnalyzer.LogError("NO_TOKEN", "Access Token not set at startup")
-		log.Println("[INFO] Access Token not set. Start authentication from OAuth button on HOME page.")
-	} else {
-		show(TW, "", false)
-	}
-
-	// まずキャッシュからフォローリストを読み込み
-	cachedFollows := loadFollowedFromCache()
-
-	// APIからフォローリストを取得
-	apiFollows := fetchFollowedFromAPI()
-
-	if len(apiFollows) > 0 {
-		followed = apiFollows
-		// APIから取得したらキャッシュに保存
-		saveFollowedToCache(apiFollows)
-	} else if len(cachedFollows) > 0 {
-		// APIが失敗したらキャッシュを使用
-		followed = cachedFollows
-		log.Println("[Cache] APIからフォローリストを取得できなかったため、キャッシュを使用します")
-	} else {
-		// どちらもない場合はデフォルト
-		followed = []string{"hanjoudesu", "bijusan", "oniyadayo", "dmf_kyochan", "vodkavdk", "lazvell", "ade3_3", "goroujp", "batora324", "kato_junichi0817", "crowfps__", "gon_vl", "yuyuta0702"}
-		log.Println("[Cache] キャッシュもAPIも利用できないため、デフォルトのフォローリストを使用します")
-	}
-
-	fetchUsers(followed)
-
-	// 通知機能の初期化
-	prevOnline = loadPrevOnlineState()
-
-	go bgLoop()
-	go ircLoop()
-	mainLoop()
-}
-
-// --- Utils ---
-func getEnvWithDefault(key, defaultValue string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
-	}
-	return defaultValue
-}
-
-// Debug logging functions
-func debugLog(format string, args ...interface{}) {
-	if debugMode {
-		log.Printf("[DEBUG] "+format, args...)
-	}
-}
-
-func infoLog(format string, args ...interface{}) {
-	log.Printf("[INFO] "+format, args...)
-}
-
-func warnLog(format string, args ...interface{}) {
-	log.Printf("[WARN] "+format, args...)
-}
-
-func errorLog(format string, args ...interface{}) {
-	log.Printf("[ERROR] "+format, args...)
-}
-
-// --- Graphics ---
-
-// drawSimpleText draws text using simple rectangles when no font is available
-type bitmap struct { w, h int; data []uint8 }
+// --- Input Handling ---
 
 func onKey(k int, p bool) {
 	lastInput = time.Now()
-
-	// Log button press for analysis
 	if logAnalyzer != nil && p {
-		buttonLabel := getButtonLabel(page, k)
-		logAnalyzer.LogButtonPress(page, k, buttonLabel)
+		logAnalyzer.LogButtonPress(page, k, getButtonLabel(page, k))
 	}
+	handlers[page](k, p)
+}
 
-	switch page {
-	case HOME:
-		if k == 0 {
-			show(TW, "", true)
-		} else if k == 1 {
-			show(OA, "", true)
-		} else if k == 2 {
-			show(ST, "", true)
-		}
-	case TW:
-		if k == 14 {
-			show(HOME, "", false)
-		} else if k < len(twOrder) {
-			show(LV, twOrder[k], true)
-		}
-	case LV:
-		if k < len(EMOTES) && live != "" {
-			ircSend(live, EMOTES[k])
-		}
-		if k == 11 && live != "" {
-			platformOpenBrowser("https://www.twitch.tv/" + live)
-		}
-		if k == 12 {
-			show(TX, live, true)
-		}
-		if k == 13 {
-			show(HOME, "", false)
-		}
-		if k == 14 {
-			back()
-		}
-	case TX:
-		if k < len(DEFAULT_TEXTS) && live != "" {
-			ircSend(live, DEFAULT_TEXTS[k])
-		}
-		if k == 12 {
-			show(NX, live, true)
-		}
-		if k == 13 {
-			show(HOME, "", false)
-		}
-		if k == 14 {
-			back()
-		}
-	case NX:
-		if k < len(DEFAULT_NEXT) && live != "" {
-			ircSend(live, DEFAULT_NEXT[k])
-		}
-		if k == 13 {
-			show(HOME, "", false)
-		}
-		if k == 14 {
-			back()
-		}
-	case ST:
-		if k == 0 {
-			show(SD, "", true)
-		} else if k == 1 {
-			platformReboot()
-		} else if k == 2 {
-			show(FN, "", true)
-		} else if k == 3 {
-			show(UI, "", true)
-		}
-		if k == 14 {
-			show(HOME, "", false)
-		}
-	case SD:
-		if k == 0 {
-			brightness = min(100, brightness+10)
-			sdeck.SetBrightness(brightness)
-			renderSD()
-		} else if k == 1 {
-			brightness = max(0, brightness-10)
-			sdeck.SetBrightness(brightness)
-			renderSD()
-		}
-		if k == 13 {
-			show(HOME, "", false)
-		} else if k == 14 {
-			back()
-		}
-	case OA:
-		if k == 0 {
-			startOAuth()
-		} else if k == 14 {
-			back()
-		}
-	case FN:
-		if k < len(FONT_NAMES) {
-			name := FONT_NAMES[k]
-			infoLog("Font selected: %s", name)
-			selectedFont = name
-			if path, ok := FONT_PATHS[name]; ok {
-				// Reload with selected font
-				platformSetFontPath(path)
-				loadFonts()
-				show(HOME, "", false)
-			}
-		}
-		if k == 13 {
-			show(HOME, "", false)
-		} else if k == 14 {
-			back()
-		}
-	case UI:
-		if k == 0 {
-			infoLog("下部背景高さ調整")
-		} else if k == 1 {
-			infoLog("視聴数背景余白調整")
-		} else if k == 2 {
-			infoLog("配信時間背景余白調整")
-		}
-		if k == 13 {
-			show(HOME, "", false)
-		} else if k == 14 {
-			back()
-		}
+type keyHandler func(k int, p bool)
+
+var handlers = map[string]keyHandler{
+	HOME: handleHome,
+	TW:   handleTW,
+	LV:   handleLV,
+	TX:   handleTX,
+	NX:   handleNX,
+	ST:   handleST,
+	SD:   handleSD,
+	OA:   handleOA,
+	FN:   handleFN,
+	UI:   handleUI,
+}
+
+func handleNav(k int, home, back bool) bool {
+	if home && k == 13 {
+		show(HOME, "", false)
+		return true
+	}
+	if back && k == 14 {
+		back()
+		return true
+	}
+	return false
+}
+
+func handleHome(k int, p bool) {
+	switch k {
+	case 0: show(TW, "", true)
+	case 1: show(OA, "", true)
+	case 2: show(ST, "", true)
 	}
 }
 
-// getButtonLabel returns the label for a button based on page and index
-func getButtonLabel(page string, buttonIndex int) string {
-	switch page {
-	case HOME:
-		switch buttonIndex {
-		case 0:
-			return "Twitch"
-		case 1:
-			return "OAuth"
-		case 2:
-			return "Setting"
-		default:
-			return fmt.Sprintf("Button %d", buttonIndex)
-		}
-	case OA:
-		switch buttonIndex {
-		case 0:
-			return "Auth"
-		case 14:
-			return "Back"
-		default:
-			return fmt.Sprintf("Button %d", buttonIndex)
-		}
-	case TW:
-		if buttonIndex == 14 {
-			return "Back"
-		}
-		return fmt.Sprintf("Streamer %d", buttonIndex)
-	case LV:
-		if buttonIndex < len(EMOTES) {
-			return EMOTES[buttonIndex]
-		}
-		return fmt.Sprintf("Button %d", buttonIndex)
-	case ST:
-		switch buttonIndex {
-		case 0:
-			return "StreamDeck"
-		case 1:
-			return "再起動"
-		case 14:
-			return "ホーム"
-		default:
-			return "" // ボタン2-13は空白
-		}
-	case SD:
-		switch buttonIndex {
-		case 0:
-			return "明るさUP"
-		case 1:
-			return "明るさDW"
-		case 13:
-			return "ホーム"
-		case 14:
-			return "戻る"
-		default:
-			return fmt.Sprintf("Button %d", buttonIndex)
-		}
-	default:
-		return fmt.Sprintf("Page:%s Btn:%d", page, buttonIndex)
+func handleTW(k int, p bool) {
+	if handleNav(k, false, true) {
+		return
+	}
+	if k < len(twOrder) {
+		show(LV, twOrder[k], true)
 	}
 }
 
-// showTokenError displays a token error message to the user
-func showTokenError(message string) {
-	log.Printf("[TOKEN ERROR] %s", message)
+func handleLV(k int, p bool) {
+	if handleNav(k, true, true) {
+		return
+	}
+	switch {
+	case k < len(EMOTES) && live != "":
+		ircSend(live, EMOTES[k])
+	case k == 11 && live != "":
+		platformOpenBrowser("https://www.twitch.tv/" + live)
+	case k == 12:
+		show(TX, live, true)
+	}
+}
 
-	// Log error to analyzer
+func handleTX(k int, p bool) {
+	if handleNav(k, true, true) {
+		return
+	}
+	if k < len(DEFAULT_TEXTS) && live != "" {
+		ircSend(live, DEFAULT_TEXTS[k])
+	} else if k == 12 {
+		show(NX, live, true)
+	}
+}
+
+func handleNX(k int, p bool) {
+	if handleNav(k, true, true) {
+		return
+	}
+	if k < len(DEFAULT_NEXT) && live != "" {
+		ircSend(live, DEFAULT_NEXT[k])
+	}
+}
+
+func handleST(k int, p bool) {
+	if handleNav(k, true, false) {
+		return
+	}
+	switch k {
+	case 0: show(SD, "", true)
+	case 1: platformReboot()
+	case 2: show(FN, "", true)
+	case 3: show(UI, "", true)
+	}
+}
+
+func handleSD(k int, p bool) {
+	if handleNav(k, true, true) {
+		return
+	}
+	switch k {
+	case 0:
+		brightness = min(100, brightness+10)
+		sdeck.SetBrightness(brightness)
+		renderSD()
+	case 1:
+		brightness = max(0, brightness-10)
+		sdeck.SetBrightness(brightness)
+		renderSD()
+	}
+}
+
+func handleOA(k int, p bool) {
+	if handleNav(k, false, true) {
+		return
+	}
+	if k == 0 {
+		startOAuth()
+	}
+}
+
+func handleFN(k int, p bool) {
+	if handleNav(k, true, true) {
+		return
+	}
+	if k >= len(FONT_NAMES) {
+		return
+	}
+	name := FONT_NAMES[k]
+	infoLog("Font selected: %s", name)
+	selectedFont = name
+	if path, ok := FONT_PATHS[name]; ok {
+		platformSetFontPath(path)
+		loadFonts()
+		show(HOME, "", false)
+	}
+}
+
+func handleUI(k int, p bool) {
+	if handleNav(k, true, true) {
+		return
+	}
+	switch k {
+	case 0: infoLog("下部背景高さ調整")
+	case 1: infoLog("視聴数背景余白調整")
+	case 2: infoLog("配信時間背景余白調整")
+	}
+}
+
+func getButtonLabel(page string, idx int) string {
+	switch page {
+	case LV:
+		if idx < len(EMOTES) {
+			return EMOTES[idx]
+		}
+	case TW:
+		if idx < len(twOrder) {
+			return twOrder[idx]
+		}
+	}
+	labels, ok := pageLabels[page]
+	if !ok {
+		return fmt.Sprintf("Page:%s Btn:%d", page, idx)
+	}
+	if l, ok := labels[idx]; ok {
+		return l
+	}
+	return fmt.Sprintf("Button %d", idx)
+}
+
+var pageLabels = map[string]map[int]string{
+	HOME: {0: "Twitch", 1: "OAuth", 2: "Setting"},
+	OA:   {0: "Auth", 14: "Back"},
+	ST:   {0: "StreamDeck", 1: "再起動", 14: "ホーム"},
+	SD:   {0: "明るさUP", 1: "明るさDW", 13: "ホーム", 14: "戻る"},
+}
+
+// --- Utils ---
+
+func getEnv(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
+}
+
+func logf(level, format string, args ...interface{}) {
+	log.Printf("["+level+"] "+format, args...)
+}
+
+func debugLog(format string, args ...interface{}) {
+	if debugMode {
+		logf("DEBUG", format, args...)
+	}
+}
+
+func infoLog(format string, args ...interface{})  { logf("INFO", format, args...) }
+func warnLog(format string, args ...interface{})  { logf("WARN", format, args...) }
+func errorLog(format string, args ...interface{}) { logf("ERROR", format, args...) }
+
+func showTokenError(msg string) {
+	logf("TOKEN ERROR", "%s", msg)
 	if logAnalyzer != nil {
-		logAnalyzer.LogTokenError("ERROR", message)
+		logAnalyzer.LogTokenError("ERROR", msg)
 	}
-
-	// Switch to HOME page to show OAuth button
 	if page != HOME {
 		show(HOME, "", false)
-		log.Println("[INFO] Please use OAuth button to re-authenticate")
+		infoLog("Please use OAuth button to re-authenticate")
 	}
 }
 
@@ -674,10 +612,10 @@ func showTokenError(message string) {
 var (
 	ircConn          net.Conn
 	ircMu            sync.Mutex
-	ircJoined        = make(map[string]bool) // 参加済みチャンネル
-	ircUsername      = ""                    // IRCユーザー名
-	ircUsernameTries = 0                     // ユーザー名取得試行回数
-	lastPing         time.Time               // 最後にPINGを送信した時間
+	ircJoined        = make(map[string]bool)
+	ircUsername      string
+	ircUsernameTries int
+	lastPing         time.Time
 )
 
 // fetchIRCUsername fetches the Twitch username from the API

@@ -1,8 +1,6 @@
 package main
 
-
 import (
-	//
 	"bytes"
 	"encoding/json"
 	"fmt"
@@ -19,9 +17,9 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-
 )
 
+// --- Profile Image ---
 
 func fetchProf(u string) image.Image {
 	if v, ok := profCache.Get(u); ok {
@@ -31,9 +29,9 @@ func fetchProf(u string) image.Image {
 	if f, err := os.Open(p); err == nil {
 		defer f.Close()
 		if img, err := jpeg.Decode(f); err == nil {
-			resized := resize72(img)
-			profCache.Set(u, resized)
-			return resized
+			r := resize72(img)
+			profCache.Set(u, r)
+			return r
 		}
 	}
 	resp, err := httpClient.Get(u)
@@ -43,111 +41,58 @@ func fetchProf(u string) image.Image {
 	defer resp.Body.Close()
 	data, _ := io.ReadAll(resp.Body)
 	os.WriteFile(p, data, 0644)
-	img, err := jpeg.Decode(bytes.NewReader(data))
-	if err != nil {
-		img, err = png.Decode(bytes.NewReader(data))
+	img, _ := jpeg.Decode(bytes.NewReader(data))
+	if img == nil {
+		img, _ = png.Decode(bytes.NewReader(data))
 	}
-	if err == nil {
-		resized := resize72(img)
-		profCache.Set(u, resized)
-		return resized
+	if img != nil {
+		r := resize72(img)
+		profCache.Set(u, r)
+		return r
 	}
 	return nil
 }
 
+// --- Twitch API ---
+
 func twitchGet(u string, params url.Values) map[string]interface{} {
-	// Check if environment variables are set
 	if CID == "" || AT == "" {
 		debugLog("Environment variables not set, skipping API call: %s", u)
 		showTokenError("Missing Client ID or Access Token")
 		return map[string]interface{}{}
 	}
-
 	if params != nil {
 		u += "?" + params.Encode()
 	}
 	req, _ := http.NewRequest("GET", u, nil)
 	req.Header.Set("Client-ID", CID)
 	req.Header.Set("Authorization", "Bearer "+AT)
-	resp, err := httpClient.Do(req)
 
+	resp, err := httpClient.Do(req)
 	if err != nil {
-		log.Printf("[API ERROR] Network error URL: %s, reason: %v", u, err)
-		if logAnalyzer != nil {
-			logAnalyzer.LogAPIError(u, 0, fmt.Sprintf("Network error: %v", err))
-		}
+		logAPIError(u, 0, fmt.Sprintf("Network error: %v", err))
 		return map[string]interface{}{}
 	}
 	defer resp.Body.Close()
 
-	// Handle token errors
 	if resp.StatusCode == 401 {
-		warnLog("Token expired or invalid (HTTP 401)")
-		if logAnalyzer != nil {
-			logAnalyzer.LogAPIError(u, 401, "Token expired or invalid")
-		}
-
-		// Try to refresh token if refresh token is available
-		if RT != "" && CS != "" {
-			infoLog("Attempting token refresh...")
-			refReq, _ := http.NewRequest("POST", "https://id.twitch.tv/oauth2/token", strings.NewReader(url.Values{
-				"grant_type":    {"refresh_token"},
-				"refresh_token": {RT},
-				"client_id":     {CID},
-				"client_secret": {CS},
-			}.Encode()))
-			refReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-			refResp, err := httpClient.Do(refReq)
+		if newToken := refreshToken(); newToken != "" {
+			req.Header.Set("Authorization", "Bearer "+newToken)
+			resp, err = httpClient.Do(req)
 			if err != nil {
-				log.Printf("[API ERROR] Refresh request failed: %v", err)
-				showTokenError("Token refresh failed. Please re-authenticate.")
-			} else {
-				defer refResp.Body.Close()
-				var refRes map[string]interface{}
-				json.NewDecoder(refResp.Body).Decode(&refRes)
-
-				if newToken, ok := refRes["access_token"].(string); ok {
-					AT = newToken
-					log.Println("[API INFO] Token refresh successful!")
-
-					// Update token in token manager
-					if tokenManager != nil && tokenManager.GetCurrentToken() != nil {
-						token := tokenManager.GetCurrentToken()
-						token.AccessToken = AT
-						if newRefresh, ok := refRes["refresh_token"].(string); ok {
-							token.RefreshToken = newRefresh
-							RT = newRefresh
-						}
-						token.ExpiresAt = time.Now().Add(24 * time.Hour)
-						tokenManager.SaveToken(token)
-					}
-
-					// Retry the original request
-					req.Header.Set("Authorization", "Bearer "+AT)
-					retryResp, err := httpClient.Do(req)
-					if err != nil {
-						log.Printf("[API ERROR] Retry after refresh failed: %v", err)
-						return map[string]interface{}{}
-					}
-					defer retryResp.Body.Close()
-					if retryResp.StatusCode >= 400 {
-						showTokenError("API request failed after token refresh")
-						return map[string]interface{}{}
-					}
-					var retryRes map[string]interface{}
-					json.NewDecoder(retryResp.Body).Decode(&retryRes)
-					return retryRes
-				}
+				return map[string]interface{}{}
 			}
+			defer resp.Body.Close()
+			if resp.StatusCode >= 400 {
+				showTokenError("API request failed after token refresh")
+				return map[string]interface{}{}
+			}
+		} else {
+			showTokenError("Access token invalid or expired. Please re-authenticate.")
+			return map[string]interface{}{}
 		}
-		// If refresh failed or not available, show error
-		showTokenError("Access token invalid or expired. Please re-authenticate.")
-		return map[string]interface{}{}
 	} else if resp.StatusCode >= 400 {
-		log.Printf("[API ERROR] Request failed with status: %d", resp.StatusCode)
-		if logAnalyzer != nil {
-			logAnalyzer.LogAPIError(u, resp.StatusCode, "API request failed")
-		}
+		logAPIError(u, resp.StatusCode, "API request failed")
 		return map[string]interface{}{}
 	}
 
@@ -158,6 +103,52 @@ func twitchGet(u string, params url.Values) map[string]interface{} {
 	}
 	return res
 }
+
+func refreshToken() string {
+	if RT == "" || CS == "" {
+		return ""
+	}
+	req, _ := http.NewRequest("POST", "https://id.twitch.tv/oauth2/token", strings.NewReader(url.Values{
+		"grant_type":    {"refresh_token"},
+		"refresh_token": {RT},
+		"client_id":     {CID},
+		"client_secret": {CS},
+	}.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+
+	var res map[string]interface{}
+	json.NewDecoder(resp.Body).Decode(&res)
+	newToken, ok := res["access_token"].(string)
+	if !ok {
+		return ""
+	}
+	AT = newToken
+	if tokenManager != nil && tokenManager.GetCurrentToken() != nil {
+		t := tokenManager.GetCurrentToken()
+		t.AccessToken = AT
+		if newRT, ok := res["refresh_token"].(string); ok {
+			t.RefreshToken = newRT
+			RT = newRT
+		}
+		t.ExpiresAt = time.Now().Add(24 * time.Hour)
+		tokenManager.SaveToken(t)
+	}
+	return AT
+}
+
+func logAPIError(u string, status int, msg string) {
+	log.Printf("[API ERROR] URL: %s, status: %d, reason: %s", u, status, msg)
+	if logAnalyzer != nil {
+		logAnalyzer.LogAPIError(u, status, msg)
+	}
+}
+
+// --- Followed Users ---
 
 func fetchFollowedFromAPI() []string {
 	if CID == "" || AT == "" || UID == "" {
@@ -172,8 +163,8 @@ func fetchFollowedFromAPI() []string {
 			params.Set("after", cursor)
 		}
 		js := twitchGet("https://api.twitch.tv/helix/channels/followed", params)
-		data, ok := js["data"].([]interface{})
-		if !ok || len(data) == 0 {
+		data, _ := js["data"].([]interface{})
+		if len(data) == 0 {
 			break
 		}
 		for _, item := range data {
@@ -213,12 +204,10 @@ func fetchUsers(logins []string) {
 	}
 }
 
+// --- Streams ---
+
 func fetchStreams() {
-	if CID == "" || AT == "" {
-		log.Println("[API INFO] 環境変数が設定されていないため配信情報の取得をスキップ")
-		return
-	}
-	if len(followed) == 0 {
+	if CID == "" || AT == "" || len(followed) == 0 {
 		return
 	}
 	stateMu.RLock()
@@ -231,8 +220,6 @@ func fetchStreams() {
 	stateMu.RUnlock()
 
 	var online []map[string]interface{}
-	hasError := false
-
 	for i := 0; i < len(uids); i += 100 {
 		end := min(i+100, len(uids))
 		params := url.Values{}
@@ -240,21 +227,16 @@ func fetchStreams() {
 			params.Add("user_id", uid)
 		}
 		js := twitchGet("https://api.twitch.tv/helix/streams", params)
-
 		if data, ok := js["data"].([]interface{}); ok {
 			for _, item := range data {
 				online = append(online, item.(map[string]interface{}))
 			}
 		} else {
-			hasError = true
-			break
+			return
 		}
 	}
 
-	if hasError {
-		return
-	}
-
+	// Sort by viewer count (bubble sort)
 	for i := 0; i < len(online); i++ {
 		for j := i + 1; j < len(online); j++ {
 			if online[j]["viewer_count"].(float64) > online[i]["viewer_count"].(float64) {
@@ -270,100 +252,73 @@ func fetchStreams() {
 	twOrder = nil
 	views = map[string]int{}
 	startedAt = map[string]float64{}
+	currentOnline := make(map[string]bool)
 
-	// 現在オンラインの配信者を記録
-	currentOnlineMap := make(map[string]bool)
 	for _, s := range online {
 		lg := id2lg[fmt.Sprintf("%v", s["user_id"])]
 		if lg == "" {
 			continue
 		}
-		currentOnlineMap[lg] = true
+		currentOnline[lg] = true
 		twOrder = append(twOrder, lg)
 		views[lg] = int(s["viewer_count"].(float64))
+
 		title := fmt.Sprintf("%v", s["title"])
 		titles[lg] = title
-		titleStep[lg] = (float64(measureText(title+"   ", 14)) / math.Max(2.0, minF(8.0, float64(len([]rune(title)))*0.2+1.5))) * SCROLL_IV
 		titleW[lg] = float64(measureText(title+"   ", 14))
+		titleStep[lg] = (titleW[lg] / math.Max(2.0, minF(8.0, float64(len([]rune(title)))*0.2+1.5))) * SCROLL_IV
+
 		game := fmt.Sprintf("%v", s["game_name"])
 		categories[lg] = game
-		catStep[lg] = (float64(measureText(game+"   ", 14)) / math.Max(2.0, minF(8.0, float64(len([]rune(game)))*0.2+1.5))) * SCROLL_IV
 		catW[lg] = float64(measureText(game+"   ", 14))
+		catStep[lg] = (catW[lg] / math.Max(2.0, minF(8.0, float64(len([]rune(game)))*0.2+1.5))) * SCROLL_IV
+
 		if t, err := time.Parse(time.RFC3339, fmt.Sprintf("%v", s["started_at"])); err == nil {
 			startedAt[lg] = float64(t.Unix())
 		}
 	}
 	stateMu.Unlock()
 
-	// 配信開始通知のチェック
+	// Notifications
 	prevOnlineMu.Lock()
-	for lg := range currentOnlineMap {
+	for lg := range currentOnline {
 		if !prevOnline[lg] {
 			prevOnlineMu.Unlock()
 			notifyStreamStart(lg)
 			prevOnlineMu.Lock()
 		}
 	}
-	prevOnline = currentOnlineMap
+	prevOnline = currentOnline
 	prevOnlineMu.Unlock()
-
 	go savePrevOnlineState()
 
-	currentOnline := len(online)
-	if currentOnline != lastOnlineCount {
-		if currentOnline == 0 {
-			log.Println("[API INFO] 現在配信中のフォローユーザーはいません (0人オンライン)")
+	if n := len(online); n != lastOnlineCount {
+		if n == 0 {
+			log.Println("[API INFO] 現在配信中のフォローユーザーはいません")
 		} else {
-			log.Printf("[API INFO] 現在 %d 人が配信中です\n", currentOnline)
+			log.Printf("[API INFO] 現在 %d 人が配信中です", n)
 		}
-		lastOnlineCount = currentOnline
+		lastOnlineCount = n
 	}
-}
-func minF(a, b float64) float64 {
-	if a < b {
-		return a
-	}
-	return b
 }
 
-// --- Renderers ---
+func minF(a, b float64) float64 { if a < b { return a }; return b }
+
+// --- IRC ---
+
 func fetchIRCUsername() bool {
 	ircUsernameTries++
-
 	if AT == "" {
 		log.Println("[IRC] ユーザー名取得失敗: アクセストークンがありません")
 		return false
 	}
-
 	log.Printf("[IRC] APIからユーザー名を取得中... (試行 %d)", ircUsernameTries)
 
-	// スコープチェック（ユーザー情報取得に必要なスコープ）
-	requiredScopes := []string{"user:read:email", "user:read"}
-	hasScope := false
-	for _, scope := range requiredScopes {
-		if strings.Contains(SCOPE, scope) {
-			hasScope = true
-			break
-		}
-	}
-
-	if !hasScope {
-		log.Printf("[IRC WARN] スコープ不足の可能性: 現在のスコープ: %s", SCOPE)
-		log.Printf("[IRC WARN] ユーザー情報取得には以下のいずれかが必要: %v", requiredScopes)
-		// 続行（既存のトークンで試す）
-	}
-
-	req, err := http.NewRequest("GET", "https://api.twitch.tv/helix/users", nil)
-	if err != nil {
-		log.Printf("[IRC] ユーザー名取得リクエスト作成失敗: %v", err)
-		return false
-	}
-
+	req, _ := http.NewRequest("GET", "https://api.twitch.tv/helix/users", nil)
 	req.Header.Set("Client-ID", CID)
 	req.Header.Set("Authorization", "Bearer "+AT)
 
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		log.Printf("[IRC] ユーザー名取得失敗: %v", err)
 		return false
@@ -372,10 +327,7 @@ func fetchIRCUsername() bool {
 
 	if resp.StatusCode != 200 {
 		log.Printf("[IRC] ユーザー名取得エラー: %s", resp.Status)
-
-		// トークンが無効な場合
 		if resp.StatusCode == 401 {
-			log.Println("[IRC] アクセストークンが無効です。再認証が必要です。")
 			showTokenError("アクセストークンが無効です。OAuthボタンで再認証してください。")
 		}
 		return false
@@ -383,221 +335,100 @@ func fetchIRCUsername() bool {
 
 	var result struct {
 		Data []struct {
-			ID              string `json:"id"`
-			Login           string `json:"login"`
-			DisplayName     string `json:"display_name"`
-			BroadcasterType string `json:"broadcaster_type"`
+			Login string `json:"login"`
+			ID    string `json:"id"`
 		} `json:"data"`
 	}
-
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		log.Printf("[IRC] ユーザー名レスポンス解析失敗: %v", err)
-		return false
-	}
-
-	if len(result.Data) == 0 {
-		log.Println("[IRC] ユーザー名取得失敗: ユーザーデータがありません")
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil || len(result.Data) == 0 {
+		log.Println("[IRC] ユーザー名取得失敗: レスポンス解析エラーまたはデータなし")
 		return false
 	}
 
 	ircMu.Lock()
 	ircUsername = strings.ToLower(result.Data[0].Login)
-	ircUsernameTries = 0 // 成功したらリセット
+	ircUsernameTries = 0
 	ircMu.Unlock()
 
-	// 環境変数とグローバル変数を更新
-	os.Setenv("TWITCH_USER_ID", ircUsername)
 	UID = ircUsername
-
-	// 設定ファイルにも保存
+	os.Setenv("TWITCH_USER_ID", UID)
 	saveUsernameToConfig(ircUsername)
 
-	log.Printf("[IRC] ユーザー名取得成功: %s (ID: %s)", ircUsername, result.Data[0].ID)
+	log.Printf("[IRC] ユーザー名取得成功: %s", ircUsername)
 	return true
 }
 
-// saveUsernameToConfig saves the username to config file
 func saveUsernameToConfig(username string) {
 	configPath := filepath.Join(os.Getenv("HOME"), ".config", "streamdeck-twitch", "config.json")
-
-	// 既存の設定を読み込み
 	configData := make(map[string]interface{})
 	if data, err := os.ReadFile(configPath); err == nil {
 		json.Unmarshal(data, &configData)
 	}
-
-	// ユーザー名を追加/更新
 	configData["username"] = username
-
-	// 保存
 	if data, err := json.MarshalIndent(configData, "", "  "); err == nil {
 		os.WriteFile(configPath, data, 0600)
 		log.Printf("[CONFIG] ユーザー名を設定ファイルに保存: %s", username)
 	}
 }
 
-// loadUsernameFromConfig loads username from config file
 func loadUsernameFromConfig() string {
 	configPath := filepath.Join(os.Getenv("HOME"), ".config", "streamdeck-twitch", "config.json")
-
 	if data, err := os.ReadFile(configPath); err == nil {
-		var configData map[string]interface{}
-		if err := json.Unmarshal(data, &configData); err == nil {
-			if username, ok := configData["username"].(string); ok {
-				return strings.ToLower(username)
+		var c map[string]interface{}
+		if json.Unmarshal(data, &c); err == nil {
+			if u, ok := c["username"].(string); ok {
+				return strings.ToLower(u)
 			}
 		}
 	}
 	return ""
 }
 
+// --- IRC Connection ---
+
 func ircLoop() {
 	for {
-		// アクセストークンがない場合は接続を試みない
 		if AT == "" {
 			time.Sleep(5 * time.Second)
 			continue
 		}
 
-		// ユーザー名を確実に取得（初回のみ）
+		// Resolve username
 		if ircUsername == "" {
-			usernameFromConfig := loadUsernameFromConfig()
-
-			if usernameFromConfig != "" {
-				// 1. 設定ファイルから読み込み
-				ircUsername = usernameFromConfig
-				log.Printf("[IRC] 設定ファイルからユーザー名読み込み: %s", ircUsername)
+			if u := loadUsernameFromConfig(); u != "" {
+				ircUsername = u
 			} else if UID != "" {
-				// 2. 環境変数から
 				ircUsername = strings.ToLower(UID)
-				log.Printf("[IRC] 環境変数からユーザー名設定: %s", ircUsername)
-			} else if AT != "" {
-				// 3. APIから取得（同期的に）
-				log.Println("[IRC] APIからユーザー名を取得します...")
-				if fetchIRCUsername() {
-					log.Printf("[IRC] APIからユーザー名取得成功: %s", ircUsername)
-				} else {
-					// API取得失敗時は匿名ユーザーを使用（読み取り専用）
-					ircUsername = "justinfan12345"
-					log.Printf("[IRC] API取得失敗、匿名ユーザーを使用: %s (送信不可)", ircUsername)
-				}
+			} else if fetchIRCUsername() {
+				// success
 			} else {
-				// 4. デフォルト（最終手段）
 				ircUsername = "justinfan12345"
-				log.Printf("[IRC] デフォルト匿名ユーザーを使用: %s (送信不可)", ircUsername)
+				log.Printf("[IRC] API取得失敗、匿名ユーザーを使用: %s (送信不可)", ircUsername)
 			}
 		}
 
 		ircMu.Lock()
 		if ircConn == nil {
-			debugLog("[IRC DEBUG] IRC接続試行: token=%v, username=%v", AT != "", ircUsername)
-
-			// アクセストークンがない場合は接続しない
-			if AT == "" {
-				debugLog("[IRC DEBUG] アクセストークンなし、接続スキップ")
-				ircMu.Unlock()
-				time.Sleep(5 * time.Second)
-				continue
-			}
-
-			// ユーザー名が未設定の場合は取得を試みる
-			if ircUsername == "" || strings.HasPrefix(ircUsername, "justinfan") {
-				debugLog("[IRC DEBUG] 有効なユーザー名がありません。取得を試みます...")
-				ircMu.Unlock()
-
-				// ユーザー名取得を試みる
-				if AT != "" {
-					fetchIRCUsername()
-				}
-
-				time.Sleep(2 * time.Second)
-				continue
-			}
-
-			if c, err := net.Dial("tcp", "irc.chat.twitch.tv:6667"); err == nil {
-				log.Println("[IRC] Twitch IRCに接続しました")
-
-				// Twitch IRC接続シーケンス
-				tokenPreview := "none"
-				if len(AT) > 10 {
-					tokenPreview = AT[:10] + "..."
-				} else if AT != "" {
-					tokenPreview = "present"
-				}
-				debugLog("[IRC DEBUG] 認証送信: PASS oauth:%s", tokenPreview)
-				fmt.Fprintf(c, "PASS oauth:%s\r\n", AT)
-
-				// ニックネーム設定
-				nick := ircUsername
-				// justinfan系ユーザーの場合は読み取り専用モード
-				isReadOnly := strings.HasPrefix(nick, "justinfan")
-				if isReadOnly {
-					debugLog("[IRC DEBUG] 読み取り専用モード: NICK %s", nick)
-				} else {
-					debugLog("[IRC DEBUG] 送信可能モード: NICK %s", nick)
-				}
-				fmt.Fprintf(c, "NICK %s\r\n", nick)
-
-				debugLog("[IRC DEBUG] CAPABILITY要求送信")
-				fmt.Fprintf(c, "CAP REQ :twitch.tv/tags twitch.tv/commands twitch.tv/membership\r\n")
-
-				ircConn = c
-				ircJoined = make(map[string]bool) // 参加済みチャンネルをリセット
-				debugLog("[IRC DEBUG] IRC接続初期化完了")
-			} else {
-				log.Printf("[IRC] 接続失敗: %v", err)
+			if !connectIRC() {
 				ircMu.Unlock()
 				time.Sleep(5 * time.Second)
 				continue
 			}
 		}
 
-		if ircConn == nil {
-			debugLog("[IRC DEBUG] IRC接続試行: token=%v, username=%v", AT != "", ircUsername)
-			if c, err := net.Dial("tcp", "irc.chat.twitch.tv:6667"); err == nil {
-				log.Println("[IRC] Twitch IRCに接続しました")
-
-				// Twitch IRC接続シーケンス
-				debugLog("[IRC DEBUG] 認証送信: PASS oauth:%s", AT[:min(10, len(AT))]+"...")
-				fmt.Fprintf(c, "PASS oauth:%s\r\n", AT)
-
-				nick := "justinfan12345"
-				if ircUsername != "" {
-					nick = ircUsername
-				}
-				debugLog("[IRC DEBUG] ニックネーム設定: NICK %s", nick)
-				fmt.Fprintf(c, "NICK %s\r\n", nick)
-
-				debugLog("[IRC DEBUG] CAPABILITY要求送信")
-				fmt.Fprintf(c, "CAP REQ :twitch.tv/tags twitch.tv/commands twitch.tv/membership\r\n")
-
-				ircConn = c
-				ircJoined = make(map[string]bool) // 参加済みチャンネルをリセット
-				debugLog("[IRC DEBUG] IRC接続初期化完了")
-			} else {
-				log.Printf("[IRC] 接続失敗: %v", err)
-				ircMu.Unlock()
-				time.Sleep(5 * time.Second)
-				continue
-			}
-		}
-
-		// 現在のライブチャンネルに参加
+		// Join channel
 		if live != "" && !ircJoined[live] {
 			log.Printf("[IRC] チャンネルに参加: #%s", live)
 			fmt.Fprintf(ircConn, "JOIN #%s\r\n", live)
 			ircJoined[live] = true
-			debugLog("[IRC DEBUG] Joined channel: #%s (joined map: %v)", live, ircJoined)
 		}
 
-		// 定期的なPING送信（接続維持）
+		// Keepalive
 		if time.Since(lastPing) > 2*time.Minute {
 			fmt.Fprintf(ircConn, "PING :tmi.twitch.tv\r\n")
 			lastPing = time.Now()
-			debugLog("[IRC DEBUG] 接続維持のためPING送信")
 		}
 
-		// メッセージ受信
+		// Read
 		ircConn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
 		buf := make([]byte, 4096)
 		n, err := ircConn.Read(buf)
@@ -606,43 +437,23 @@ func ircLoop() {
 				ircMu.Unlock()
 				continue
 			}
-
-			// EOFエラーの場合は接続が切断されたと判断
-			if err == io.EOF {
-				log.Println("[IRC] 接続が切断されました (EOF)。再接続します...")
-			} else {
-				log.Printf("[IRC] 接続エラー: %v", err)
-			}
-
-			// 接続をクリーンアップ
-			if ircConn != nil {
-				ircConn.Close()
-			}
+			log.Printf("[IRC] 接続エラー: %v", err)
+			ircConn.Close()
 			ircConn = nil
-			ircJoined = make(map[string]bool) // 参加済みチャンネルをリセット
+			ircJoined = make(map[string]bool)
 			ircMu.Unlock()
-
-			// 再接続前に少し待機
 			time.Sleep(5 * time.Second)
 			continue
 		}
 
-		// 受信データ処理
-		data := string(buf[:n])
-		lines := strings.Split(data, "\r\n")
-		for _, line := range lines {
+		// Process lines
+		for _, line := range strings.Split(string(buf[:n]), "\r\n") {
 			if line == "" {
 				continue
 			}
-
-			// PING応答
 			if strings.HasPrefix(line, "PING") {
 				fmt.Fprintf(ircConn, "PONG :tmi.twitch.tv\r\n")
-				log.Println("[IRC] PINGに応答")
-			}
-
-			// 接続確認メッセージ
-			if strings.Contains(line, "Welcome, GLHF!") {
+			} else if strings.Contains(line, "Welcome, GLHF!") {
 				log.Println("[IRC] Twitch IRCに正常に接続されました")
 			}
 		}
@@ -650,263 +461,77 @@ func ircLoop() {
 	}
 }
 
+func connectIRC() bool {
+	if AT == "" || ircUsername == "" {
+		return false
+	}
+
+	c, err := net.Dial("tcp", "irc.chat.twitch.tv:6667")
+	if err != nil {
+		log.Printf("[IRC] 接続失敗: %v", err)
+		return false
+	}
+
+	log.Println("[IRC] Twitch IRCに接続しました")
+	fmt.Fprintf(c, "PASS oauth:%s\r\n", AT)
+	fmt.Fprintf(c, "NICK %s\r\n", ircUsername)
+	fmt.Fprintf(c, "CAP REQ :twitch.tv/tags twitch.tv/commands twitch.tv/membership\r\n")
+
+	ircConn = c
+	ircJoined = make(map[string]bool)
+	return true
+}
+
+// --- Chat Sending ---
+
 func ircSend(ch, msg string) {
 	log.Printf("[CHAT] チャット送信試行: #%s -> %s", ch, msg)
-	debugLog("[CHAT DEBUG] 現在の状態: AT=%v, CID=%v, ircUsername=%s", AT != "", CID != "", ircUsername)
-
-	// Twitch APIを使用したチャット送信
-	sendChatMessage(ch, msg)
+	sendViaIRC(ch, msg)
 }
 
-// sendChatMessage sends a chat message using Twitch Helix API
-func sendChatMessage(channel, message string) {
-	debugLog("[CHAT DEBUG] sendChatMessage called: channel=%s, message=%s", channel, message)
-
-	if AT == "" || CID == "" {
-		log.Printf("[CHAT ERROR] 送信失敗: アクセストークンまたはClient IDがありません")
-		debugLog("[CHAT DEBUG] AT empty: %v, CID empty: %v", AT == "", CID == "")
-		return
-	}
-
-	if channel == "" {
-		log.Printf("[CHAT ERROR] 送信失敗: チャンネル名が空です")
-		return
-	}
-
-	if message == "" {
-		log.Printf("[CHAT ERROR] 送信失敗: メッセージが空です")
-		return
-	}
-
-	// チャンネルIDを取得（ユーザー名から）
-	channelID, err := getChannelID(channel)
-	if err != nil {
-		log.Printf("[CHAT ERROR] チャンネルID取得失敗: %v", err)
-		return
-	}
-
-	// デバッグログ
-	debugLog("[CHAT DEBUG] チャンネルID: %s (for %s)", channelID, channel)
-
-	// ブロードキャスターIDを取得（送信者）
-	broadcasterID, err := getBroadcasterID()
-	if err != nil {
-		log.Printf("[CHAT WARN] ブロードキャスターID取得失敗: %v", err)
-		log.Printf("[CHAT INFO] broadcasterIDなしでIRC送信を試みます")
-		broadcasterID = "" // 空でも続行
-	}
-
-	// Twitch Helix API: POST /helix/chat/messages
-	// 注意: このエンドポイントは現在ベータ版で、特別なアクセス権が必要かもしれません
-	// 代替として、従来のIRCを使用するか、別の方法を検討
-
-	log.Printf("[CHAT WARN] Twitch Helix chat/messages APIは制限がある可能性があります")
-	log.Printf("[CHAT INFO] 代替方法としてIRC送信を試みます")
-
-	// IRCを使用した送信（OAuthトークンとユーザー名が必要）
-	debugLog("[CHAT DEBUG] broadcasterID取得結果: %s", broadcasterID)
-
-	// broadcasterIDが空でもIRC送信を試みる
-	sendViaIRC(channel, message, broadcasterID)
-}
-
-// getChannelID gets the channel ID from username
-func getChannelID(username string) (string, error) {
-	if username == "" {
-		return "", fmt.Errorf("ユーザー名が空です")
-	}
-
-	// キャッシュがあれば使用
-	if cachedID, ok := id2lg[username]; ok {
-		return cachedID, nil
-	}
-
-	// APIから取得
-	url := fmt.Sprintf("https://api.twitch.tv/helix/users?login=%s", username)
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return "", err
-	}
-
-	req.Header.Set("Client-ID", CID)
-	req.Header.Set("Authorization", "Bearer "+AT)
-
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		return "", fmt.Errorf("APIエラー: %s", resp.Status)
-	}
-
-	var result struct {
-		Data []struct {
-			ID    string `json:"id"`
-			Login string `json:"login"`
-		} `json:"data"`
-	}
-
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", err
-	}
-
-	if len(result.Data) == 0 {
-		return "", fmt.Errorf("ユーザーが見つかりません: %s", username)
-	}
-
-	// キャッシュに保存
-	id2lg[username] = result.Data[0].ID
-	return result.Data[0].ID, nil
-}
-
-// getBroadcasterID gets the broadcaster ID (current user)
-func getBroadcasterID() (string, error) {
-	if UID != "" {
-		return UID, nil
-	}
-
-	// APIから取得
-	url := "https://api.twitch.tv/helix/users"
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return "", err
-	}
-
-	req.Header.Set("Client-ID", CID)
-	req.Header.Set("Authorization", "Bearer "+AT)
-
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		return "", fmt.Errorf("APIエラー: %s", resp.Status)
-	}
-
-	var result struct {
-		Data []struct {
-			ID    string `json:"id"`
-			Login string `json:"login"`
-		} `json:"data"`
-	}
-
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", err
-	}
-
-	if len(result.Data) == 0 {
-		return "", fmt.Errorf("ユーザー情報が取得できません")
-	}
-
-	// 環境変数とグローバル変数を更新
-	UID = result.Data[0].ID
-	os.Setenv("TWITCH_USER_ID", UID)
-
-	return UID, nil
-}
-
-// sendViaIRC sends a message via IRC with proper OAuth authentication
-func sendViaIRC(channel, message, broadcasterID string) {
-	debugLog("[IRC SEND DEBUG] sendViaIRC called: channel=%s, message=%s", channel, message)
-
+func sendViaIRC(channel, message string) {
 	ircMu.Lock()
 	defer ircMu.Unlock()
 
-	log.Printf("[IRC SEND] 送信試行: #%s -> %s", channel, message)
-
-	// 必須チェック
-	debugLog("[IRC SEND DEBUG] 必須チェック: AT=%v, ircConn=%v, ircUsername=%s", AT != "", ircConn != nil, ircUsername)
 	if AT == "" {
 		log.Printf("[IRC SEND ERROR] アクセストークンがありません")
 		return
 	}
-
-	// スコープチェック（チャット送信に必要なスコープ）
-	debugLog("[IRC SEND DEBUG] スコープチェック: 現在のスコープ=%s", SCOPE)
-	requiredChatScopes := []string{"user:write:chat", "chat:edit"}
-	hasChatScope := false
-	for _, scope := range requiredChatScopes {
-		if strings.Contains(SCOPE, scope) {
-			hasChatScope = true
-			debugLog("[IRC SEND DEBUG] 必要なスコープを確認: %s", scope)
-			break
-		}
+	if ircConn == nil {
+		log.Printf("[IRC SEND ERROR] IRC接続がありません")
+		return
 	}
 
-	if !hasChatScope {
-		log.Printf("[IRC SEND ERROR] スコープ不足: チャット送信には以下のいずれかが必要: %v", requiredChatScopes)
-		log.Printf("[IRC SEND ERROR] 現在のスコープ: %s", SCOPE)
-		log.Printf("[IRC SEND INFO] OAuth認証をやり直して適切なスコープを取得してください")
-		log.Printf("[IRC SEND INFO] 手順: ホーム画面 → OAuthボタン → 認証後、Save envボタン")
-
-		// ユーザーに視覚的なフィードバックを提供
+	// Scope check
+	if !strings.Contains(SCOPE, "user:write:chat") && !strings.Contains(SCOPE, "chat:edit") {
+		log.Printf("[IRC SEND ERROR] スコープ不足: チャット送信には user:write:chat または chat:edit が必要")
 		if page == LV || page == TX || page == NX {
 			showTokenError("チャット送信には追加の権限が必要です。OAuthで再認証してください。")
 		}
 		return
 	}
 
-	debugLog("[IRC SEND DEBUG] スコープチェック通過")
-
-	if ircConn == nil {
-		log.Printf("[IRC SEND ERROR] IRC接続がありません")
-		return
-	}
-
-	// ユーザー名がjustinfan系でないことを確認
-	debugLog("[IRC SEND DEBUG] ユーザー名チェック: ircUsername=%s", ircUsername)
+	// Username check
 	if strings.HasPrefix(ircUsername, "justinfan") {
-		log.Printf("[IRC SEND ERROR] 匿名ユーザー %s では送信できません", ircUsername)
-		log.Printf("[IRC SEND INFO] OAuth認証を行って有効なユーザー名を取得してください")
-
-		// ユーザー名を再取得してみる
-		log.Println("[IRC SEND] ユーザー名を再取得します...")
-		if fetchIRCUsername() {
-			log.Printf("[IRC SEND] ユーザー名再取得成功: %s", ircUsername)
-			// 再取得後もjustinfan系なら送信不可
-			if strings.HasPrefix(ircUsername, "justinfan") {
-				return
-			}
+		log.Printf("[IRC SEND ERROR] 匿名ユーザーでは送信できません")
+		if fetchIRCUsername() && !strings.HasPrefix(ircUsername, "justinfan") {
+			// retry with new username
 		} else {
 			return
 		}
 	}
 
-	debugLog("[IRC SEND DEBUG] ユーザー名チェック通過")
-
-	// チャンネルに参加しているか確認・参加
+	// Join and send
 	if !ircJoined[channel] {
-		log.Printf("[IRC SEND] チャンネルに参加: #%s", channel)
-		joinCmd := fmt.Sprintf("JOIN #%s\r\n", channel)
-		if _, err := fmt.Fprintf(ircConn, joinCmd); err != nil {
-			log.Printf("[IRC SEND ERROR] チャンネル参加失敗: %v", err)
-			return
-		}
+		fmt.Fprintf(ircConn, "JOIN #%s\r\n", channel)
 		ircJoined[channel] = true
-		time.Sleep(200 * time.Millisecond) // 参加処理待ち
+		time.Sleep(200 * time.Millisecond)
 	}
 
-	// メッセージ送信
-	msgCmd := fmt.Sprintf("PRIVMSG #%s :%s\r\n", channel, message)
-	debugLog("[IRC SEND DEBUG] 送信コマンド: %s", strings.TrimSpace(msgCmd))
-
-	n, err := fmt.Fprintf(ircConn, msgCmd)
-	if err != nil {
-		log.Printf("[IRC SEND ERROR] 送信失敗: %v (bytes: %d)", err, n)
-
-		// 接続エラーの場合は再接続
-		if strings.Contains(err.Error(), "broken pipe") ||
-			strings.Contains(err.Error(), "connection reset") {
-			log.Println("[IRC SEND] 接続エラー、再接続を試みます")
-			if ircConn != nil {
-				ircConn.Close()
-			}
+	if n, err := fmt.Fprintf(ircConn, "PRIVMSG #%s :%s\r\n", channel, message); err != nil {
+		log.Printf("[IRC SEND ERROR] 送信失敗: %v", err)
+		if strings.Contains(err.Error(), "broken pipe") || strings.Contains(err.Error(), "connection reset") {
+			ircConn.Close()
 			ircConn = nil
 		}
 	} else {
@@ -914,13 +539,79 @@ func sendViaIRC(channel, message, broadcasterID string) {
 	}
 }
 
-// --- Loops ---
+// --- User Info Helpers ---
+
+func apiGetUsers(login string) ([]struct {
+	ID    string `json:"id"`
+	Login string `json:"login"`
+}, error) {
+	u := "https://api.twitch.tv/helix/users"
+	if login != "" {
+		u += "?login=" + login
+	}
+	req, _ := http.NewRequest("GET", u, nil)
+	req.Header.Set("Client-ID", CID)
+	req.Header.Set("Authorization", "Bearer "+AT)
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("API error: %s", resp.Status)
+	}
+
+	var result struct {
+		Data []struct {
+			ID    string `json:"id"`
+			Login string `json:"login"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+	return result.Data, nil
+}
+
+func getChannelID(username string) (string, error) {
+	if username == "" {
+		return "", fmt.Errorf("ユーザー名が空です")
+	}
+	if cached, ok := id2lg[username]; ok {
+		return cached, nil
+	}
+	data, err := apiGetUsers(username)
+	if err != nil || len(data) == 0 {
+		return "", fmt.Errorf("ユーザーが見つかりません: %s", username)
+	}
+	id2lg[username] = data[0].ID
+	return data[0].ID, nil
+}
+
+func getBroadcasterID() (string, error) {
+	if UID != "" {
+		return UID, nil
+	}
+	data, err := apiGetUsers("")
+	if err != nil || len(data) == 0 {
+		return "", fmt.Errorf("ユーザー情報が取得できません")
+	}
+	UID = data[0].ID
+	os.Setenv("TWITCH_USER_ID", UID)
+	return UID, nil
+}
+
+// --- Main Loops ---
+
 func bgLoop() {
 	for {
 		fetchStreams()
 		time.Sleep(FETCH_IV * time.Second)
 	}
 }
+
 func mainLoop() {
 	lastFetch, lastScroll := time.Now(), time.Now()
 	for {
@@ -931,51 +622,13 @@ func mainLoop() {
 				renderTW()
 			}
 		}
-		// コメント窓以外で1分以上の無操作状態の場合TWITCH窓へ移行
+		// Auto-return to TW after idle
 		if page != TW && page != LV && page != TX && page != NX && now.Sub(lastInput).Seconds() > IDLE_TIMEOUT {
 			show(TW, "", false)
 		}
 		if now.Sub(lastScroll).Seconds() > SCROLL_IV {
 			lastScroll = now
-			stateMu.Lock()
-			if scrollMode == "title" {
-				allDone := true
-				for _, lg := range twOrder {
-					titleOfs[lg] += titleStep[lg]
-					if titleW[lg] > 0 && math.Mod(titleOfs[lg], titleW[lg])+titleStep[lg] >= titleW[lg] {
-						titleWrapped[lg] = true
-					}
-					if !titleWrapped[lg] {
-						allDone = false
-					}
-				}
-				if allDone && len(twOrder) > 0 {
-					scrollMode = "category"
-					for _, lg := range twOrder {
-						catOfs[lg] = 0
-						catWrapped[lg] = false
-					}
-				}
-			} else {
-				allDone := true
-				for _, lg := range twOrder {
-					catOfs[lg] += catStep[lg]
-					if catW[lg] > 0 && math.Mod(catOfs[lg], catW[lg])+catStep[lg] >= catW[lg] {
-						catWrapped[lg] = true
-					}
-					if !catWrapped[lg] {
-						allDone = false
-					}
-				}
-				if allDone && len(twOrder) > 0 {
-					scrollMode = "title"
-					for _, lg := range twOrder {
-						titleOfs[lg] = 0
-						titleWrapped[lg] = false
-					}
-				}
-			}
-			stateMu.Unlock()
+			scrollAll()
 			if page == TW {
 				renderTW()
 			}
@@ -984,17 +637,64 @@ func mainLoop() {
 	}
 }
 
+func scrollAll() {
+	stateMu.Lock()
+	defer stateMu.Unlock()
+
+	fields := []struct {
+		mode     string
+		ofs      map[string]float64
+		step     map[string]float64
+		width    map[string]float64
+		wrapped  map[string]bool
+		nextMode string
+	}{
+		{"title", titleOfs, titleStep, titleW, titleWrapped, "category"},
+		{"category", catOfs, catStep, catW, catWrapped, "title"},
+	}
+
+	for _, f := range fields {
+		if scrollMode != f.mode {
+			continue
+		}
+		allDone := true
+		for _, lg := range twOrder {
+			f.ofs[lg] += f.step[lg]
+			if f.width[lg] > 0 && math.Mod(f.ofs[lg], f.width[lg])+f.step[lg] >= f.width[lg] {
+				f.wrapped[lg] = true
+			}
+			if !f.wrapped[lg] {
+				allDone = false
+			}
+		}
+		if allDone && len(twOrder) > 0 {
+			scrollMode = f.nextMode
+			for _, lg := range twOrder {
+				switch f.nextMode {
+				case "category":
+					catOfs[lg] = 0
+					catWrapped[lg] = false
+				case "title":
+					titleOfs[lg] = 0
+					titleWrapped[lg] = false
+				}
+			}
+		}
+		break
+	}
+}
+
+// --- Cache & Config ---
+
 func loadFollowedFromCache() []string {
 	data, err := os.ReadFile(followCachePath)
 	if err != nil {
 		return nil
 	}
-
 	var followed []string
-	if err := json.Unmarshal(data, &followed); err != nil {
+	if json.Unmarshal(data, &followed); err != nil {
 		return nil
 	}
-
 	log.Printf("[Cache] フォローリストをキャッシュから読み込みました (%d人)", len(followed))
 	return followed
 }
@@ -1002,112 +702,73 @@ func loadFollowedFromCache() []string {
 func saveFollowedToCache(followed []string) {
 	data, err := json.Marshal(followed)
 	if err != nil {
-		log.Printf("[Cache] フォローリストのキャッシュ保存エラー: %v", err)
+		log.Printf("[Cache] キャッシュ保存エラー: %v", err)
 		return
 	}
-
 	if err := os.WriteFile(followCachePath, data, 0644); err != nil {
-		log.Printf("[Cache] フォローリストのキャッシュ保存エラー: %v", err)
+		log.Printf("[Cache] キャッシュ保存エラー: %v", err)
 		return
 	}
-
 	log.Printf("[Cache] フォローリストをキャッシュに保存しました (%d人)", len(followed))
 }
 
-// loadPrevOnlineState loads previous online state from file
+func cachePath(name string) string {
+	userCache, _ := os.UserCacheDir()
+	return filepath.Join(userCache, "streamdeck-twitch", name)
+}
+
 func loadPrevOnlineState() map[string]bool {
-	userCache, err := os.UserCacheDir()
+	data, err := os.ReadFile(cachePath("prev_online.json"))
 	if err != nil {
 		return make(map[string]bool)
 	}
-
-	statePath := filepath.Join(userCache, "streamdeck-twitch", "prev_online.json")
-	data, err := os.ReadFile(statePath)
-	if err != nil {
-		return make(map[string]bool)
-	}
-
 	var state map[string]bool
-	if err := json.Unmarshal(data, &state); err != nil {
+	if json.Unmarshal(data, &state); err != nil {
 		return make(map[string]bool)
 	}
-
 	log.Printf("[Notification] 前回の配信状態を読み込みました: %d人", len(state))
 	return state
 }
 
-// savePrevOnlineState saves current online state to file
 func savePrevOnlineState() {
 	prevOnlineMu.RLock()
 	defer prevOnlineMu.RUnlock()
 
-	userCache, err := os.UserCacheDir()
-	if err != nil {
-		return
-	}
-
-	cacheDir := filepath.Join(userCache, "streamdeck-twitch")
-	os.MkdirAll(cacheDir, 0755)
-
-	statePath := filepath.Join(cacheDir, "prev_online.json")
-	data, err := json.Marshal(prevOnline)
-	if err != nil {
-		return
-	}
-
-	os.WriteFile(statePath, data, 0644)
+	os.MkdirAll(filepath.Dir(cachePath("prev_online.json")), 0755)
+	data, _ := json.Marshal(prevOnline)
+	os.WriteFile(cachePath("prev_online.json"), data, 0644)
 	log.Printf("[Notification] 配信状態を保存しました: %d人", len(prevOnline))
 }
 
-// loadNotificationSetting loads notification setting from config file
 func loadNotificationSetting() bool {
-	initConfig()
-
 	data, err := os.ReadFile(configPath)
 	if err != nil {
-		return true // デフォルトは有効
+		return true // default enabled
 	}
-
 	var config Config
-	if err := json.Unmarshal(data, &config); err != nil {
-		return true // デフォルトは有効
+	if json.Unmarshal(data, &config); err != nil {
+		return true
 	}
-
-	log.Printf("[Notification] 通知設定を読み込みました: %v", config.NotificationsEnabled)
+	log.Printf("[Notification] 通知設定: %v", config.NotificationsEnabled)
 	return config.NotificationsEnabled
 }
 
-// --- Stream Notification Functions ---
+// --- Notifications ---
 
-// notifyStreamStart handles stream start notifications
 func notifyStreamStart(login string) {
 	stateMu.RLock()
 	userInfo, ok := lu[login]
 	stateMu.RUnlock()
-
 	if !ok {
 		log.Printf("[Notification] ユーザー情報が見つかりません: %s", login)
 		return
 	}
-
 	displayName := fmt.Sprintf("%v", userInfo["display_name"])
 	if displayName == "" {
 		displayName = login
 	}
-
-	message := fmt.Sprintf("%sさんが配信開始", displayName)
-	log.Printf("[Notification] %s", message)
-
-	// 音声通知を実行
-	speakText(message)
+	log.Printf("[Notification] %sさんが配信開始", displayName)
+	platformSpeakText(displayName + "さんが配信開始")
 }
 
-// speakText uses platform-specific TTS to speak text
-func speakText(text string) {
-	log.Printf("[TTS] 音声合成: %s", text)
-
-	go func() {
-		platformSpeakText(text)
-	}()
-}
-
+// speakText removed - call platformSpeakText directly
